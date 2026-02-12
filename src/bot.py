@@ -198,8 +198,8 @@ async def _send_audit_message(
     action: str,
     details: str,
 ) -> None:
-    chat_id = _settings(ctx).audit_chat_id
-    if chat_id is None:
+    chat_ids = _settings(ctx).audit_chat_ids
+    if not chat_ids:
         return
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -210,10 +210,11 @@ async def _send_audit_message(
         f"🕒 {timestamp}\n"
         f"ℹ️ {details}"
     )
-    try:
-        await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
-    except TelegramError:
-        return
+    for chat_id in chat_ids:
+        try:
+            await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+        except TelegramError:
+            continue
 
 
 async def _send_audit_file(
@@ -225,8 +226,8 @@ async def _send_audit_file(
     total_lines: int,
     inserted: int,
 ) -> None:
-    chat_id = _settings(ctx).audit_chat_id
-    if chat_id is None:
+    chat_ids = _settings(ctx).audit_chat_ids
+    if not chat_ids:
         return
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -241,9 +242,15 @@ async def _send_audit_file(
 
     try:
         with source_path.open("rb") as fh:
-            await ctx.bot.send_document(chat_id=chat_id, document=fh, filename=filename, caption=caption, parse_mode=ParseMode.HTML)
-    except (OSError, TelegramError):
+            payload = fh.read()
+    except OSError:
         return
+
+    for chat_id in chat_ids:
+        try:
+            await ctx.bot.send_document(chat_id=chat_id, document=payload, filename=filename, caption=caption, parse_mode=ParseMode.HTML)
+        except TelegramError:
+            continue
 
 
 async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:

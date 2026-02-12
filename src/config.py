@@ -14,7 +14,7 @@ class Settings:
     import_batch_size: int = 5000
     max_file_size_mb: int = 50
     admin_ids: tuple[int, ...] = ()
-    audit_chat_id: int | None = None
+    audit_chat_ids: tuple[int, ...] = ()
 
 
 
@@ -33,11 +33,18 @@ def load_settings() -> Settings:
         if value
     )
 
+    audit_chat_raw = os.getenv("AUDIT_CHAT_ID", "").strip()
+    audit_chat_ids = tuple(
+        int(value)
+        for value in (part.strip() for part in audit_chat_raw.split(","))
+        if value
+    )
+
     return Settings(
         bot_token=token,
         db_path=db_path,
         import_batch_size=int(os.getenv("IMPORT_BATCH_SIZE", "5000")),
         max_file_size_mb=int(os.getenv("MAX_FILE_SIZE_MB", "50")),
         admin_ids=admin_ids,
-        audit_chat_id=int(audit_chat_raw) if (audit_chat_raw := os.getenv("AUDIT_CHAT_ID", "").strip()) else None,
+        audit_chat_ids=audit_chat_ids,
     )
