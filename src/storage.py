@@ -4,6 +4,7 @@ import hashlib
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -39,6 +40,14 @@ class InsertResult:
     skipped_empty: int
 
 
+@dataclass(slots=True)
+class UploadRecord:
+    filename: str
+    inserted: int
+    total_lines: int
+    created_at: str
+
+
 class HashStore:
     def __init__(self, path: Path, map_size_bytes: int | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,7 +57,32 @@ class HashStore:
         self._conn.execute("PRAGMA temp_store=MEMORY")
         self._conn.execute("PRAGMA cache_size=-400000")
         self._conn.execute("CREATE TABLE IF NOT EXISTS hashes (key BLOB PRIMARY KEY)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                balance INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                inserted INTEGER NOT NULL,
+                total_lines INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         self._conn.commit()
+
+    @staticmethod
+    def _utc_now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     def close(self) -> None:
         self._conn.close()
@@ -95,3 +129,45 @@ class HashStore:
             "map_size": 0,
             "last_pgno": 0,
         }
+
+    def get_balance(self, user_id: int) -> int:
+        row = self._conn.execute("SELECT balance FROM users WHERE user_id=?", (user_id,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def add_balance(self, user_id: int, amount: int) -> int:
+        now = self._utc_now()
+        self._conn.execute(
+            """
+            INSERT INTO users(user_id, balance, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                balance = balance + excluded.balance,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, amount, now),
+        )
+        self._conn.commit()
+        return self.get_balance(user_id)
+
+    def record_upload(self, user_id: int, filename: str, inserted: int, total_lines: int) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO uploads(user_id, filename, inserted, total_lines, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, filename, inserted, total_lines, self._utc_now()),
+        )
+        self._conn.commit()
+
+    def get_recent_uploads(self, user_id: int, limit: int = 5) -> list[UploadRecord]:
+        rows = self._conn.execute(
+            """
+            SELECT filename, inserted, total_lines, created_at
+            FROM uploads
+            WHERE user_id=?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+        return [UploadRecord(*row) for row in rows]
