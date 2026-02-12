@@ -28,6 +28,133 @@ cp .env.example .env
 python -m src.bot
 ```
 
+## Деплой на VPS (Ubuntu 22.04)
+
+Ниже практичный вариант через `systemd`, чтобы бот автоматически стартовал после перезагрузки и перезапускался при сбоях.
+
+### 1) Подготовка сервера
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip git
+```
+
+Создайте отдельного системного пользователя для бота:
+
+```bash
+sudo adduser --system --group --home /opt/antipublicbot antipublicbot
+```
+
+### 2) Клонирование проекта и установка зависимостей
+
+```bash
+sudo -u antipublicbot -H bash -lc '
+cd /opt/antipublicbot
+git clone <ВАШ_REPO_URL> app
+cd app
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -e .
+'
+```
+
+### 3) Настройка окружения
+
+Создайте `.env`:
+
+```bash
+sudo -u antipublicbot -H bash -lc '
+cd /opt/antipublicbot/app
+cat > .env << "EOF"
+BOT_TOKEN=123456:your_real_bot_token
+LMDB_PATH=/opt/antipublicbot/app/data/antipublic.sqlite3
+IMPORT_BATCH_SIZE=5000
+MAX_FILE_SIZE_MB=50
+EOF
+'
+```
+
+Создайте директорию под БД:
+
+```bash
+sudo -u antipublicbot mkdir -p /opt/antipublicbot/app/data
+```
+
+### 4) (Опционально) Первичная загрузка большой базы
+
+Если у вас уже есть большие `.txt` файлы, импортируйте локально на VPS:
+
+```bash
+sudo -u antipublicbot -H bash -lc '
+cd /opt/antipublicbot/app
+source .venv/bin/activate
+python -m src.bootstrap /path/to/base.txt
+'
+```
+
+### 5) Создание systemd-сервиса
+
+Создайте файл `/etc/systemd/system/antipublicbot.service`:
+
+```ini
+[Unit]
+Description=AntiPublic Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=antipublicbot
+Group=antipublicbot
+WorkingDirectory=/opt/antipublicbot/app
+EnvironmentFile=/opt/antipublicbot/app/.env
+ExecStart=/opt/antipublicbot/app/.venv/bin/python -m src.bot
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Примените и запустите:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now antipublicbot
+```
+
+### 6) Проверка и полезные команды
+
+Статус сервиса:
+
+```bash
+sudo systemctl status antipublicbot
+```
+
+Логи в реальном времени:
+
+```bash
+sudo journalctl -u antipublicbot -f
+```
+
+Перезапуск после обновления:
+
+```bash
+sudo systemctl restart antipublicbot
+```
+
+### 7) Обновление бота
+
+```bash
+sudo -u antipublicbot -H bash -lc '
+cd /opt/antipublicbot/app
+git pull
+source .venv/bin/activate
+pip install -e .
+'
+sudo systemctl restart antipublicbot
+```
+
 ## Переменные окружения
 - `BOT_TOKEN` — токен Telegram-бота (обязательно).
 - `LMDB_PATH` — путь к SQLite базе (по умолчанию `./data/antipublic.sqlite3`).
