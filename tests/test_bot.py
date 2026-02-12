@@ -1,11 +1,21 @@
-from src.bot import _admin_keyboard, _main_keyboard, _render_user_link
+from src.bot import _admin_keyboard, _admin_panel_keyboard, _main_keyboard, _render_user_link
 
 
-def test_admin_keyboard_contains_all_admin_actions():
+def test_admin_keyboard_contains_only_admin_entrypoint():
     keyboard = _admin_keyboard().keyboard
     flat = [button.text for row in keyboard for button in row]
 
     assert "🛠 Админка" in flat
+    assert "💳 Выдать баланс" not in flat
+    assert "🧾 Отчет по пользователю" not in flat
+    assert "👥 Список пользователей" not in flat
+    assert "📦 Выгрузка пользователя" not in flat
+
+
+def test_admin_panel_inline_keyboard_contains_all_admin_actions():
+    inline_keyboard = _admin_panel_keyboard().inline_keyboard
+    flat = [button.text for row in inline_keyboard for button in row]
+
     assert "💳 Выдать баланс" in flat
     assert "🧾 Отчет по пользователю" in flat
     assert "👥 Список пользователей" in flat
