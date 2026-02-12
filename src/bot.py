@@ -3,14 +3,22 @@ from __future__ import annotations
 import csv
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from html import escape
 from shutil import copy2
 
-from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from .config import Settings, load_settings
 from .importers import import_text_blob, import_txt_file
@@ -87,14 +95,19 @@ def _admin_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton("📂 Загрузить файл"), KeyboardButton("🔍 Проверить строку")],
             [KeyboardButton("👤 Профиль")],
             [KeyboardButton("🛠 Админка")],
-            [
-                KeyboardButton("💳 Выдать баланс"),
-                KeyboardButton("🧾 Отчет по пользователю"),
-            ],
-            [KeyboardButton("👥 Список пользователей")],
-            [KeyboardButton("📦 Выгрузка пользователя")],
         ],
         resize_keyboard=True,
+    )
+
+
+def _admin_panel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("💳 Выдать баланс", callback_data="admin:grant_balance")],
+            [InlineKeyboardButton("🧾 Отчет по пользователю", callback_data="admin:user_report")],
+            [InlineKeyboardButton("👥 Список пользователей", callback_data="admin:list_users")],
+            [InlineKeyboardButton("📦 Выгрузка пользователя", callback_data="admin:export_user")],
+        ]
     )
 
 
@@ -109,9 +122,6 @@ def _settings(ctx: ContextTypes.DEFAULT_TYPE) -> Settings:
 def _is_admin(user_id: int, settings: Settings) -> bool:
     return user_id in settings.admin_ids
 
-
-def _try_charge_balance(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, amount: int) -> bool:
-    return _store(ctx).spend_balance(user_id, amount)
 
 
 def _render_user_admin_report(ctx: ContextTypes.DEFAULT_TYPE, target_user_id: int) -> str:
@@ -179,6 +189,72 @@ def _render_user_link(user_id: int, username: str) -> str:
     if clean_username:
         return f"<a href=\"https://t.me/{clean_username}\">@{clean_username}</a>"
     return f"<a href=\"tg://user?id={user_id}\">профиль</a>"
+
+
+async def _send_audit_message(
+    ctx: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    username: str,
+    action: str,
+    details: str,
+) -> None:
+    chat_id = _settings(ctx).audit_chat_id
+    if chat_id is None:
+        return
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    user_repr = f"@{username}" if username else "(без username)"
+    text = (
+        f"🔔 {action}\n"
+        f"👤 user_id: <code>{user_id}</code> {user_repr}\n"
+        f"🕒 {timestamp}\n"
+        f"ℹ️ {details}"
+    )
+    try:
+        await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+    except TelegramError:
+        return
+
+
+async def _send_audit_file(
+    ctx: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    username: str,
+    filename: str,
+    source_path: Path,
+    total_lines: int,
+    inserted: int,
+) -> None:
+    chat_id = _settings(ctx).audit_chat_id
+    if chat_id is None:
+        return
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    user_repr = f"@{username}" if username else "(без username)"
+    caption = (
+        "📥 Новый загруженный файл\n"
+        f"👤 user_id: <code>{user_id}</code> {user_repr}\n"
+        f"🕒 {timestamp}\n"
+        f"📄 filename: {escape(filename)}\n"
+        f"📊 строк: {total_lines}, уникальных: {inserted}"
+    )
+
+    try:
+        with source_path.open("rb") as fh:
+            await ctx.bot.send_document(chat_id=chat_id, document=fh, filename=filename, caption=caption, parse_mode=ParseMode.HTML)
+    except (OSError, TelegramError):
+        return
+
+
+async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:
+    user_id = update.effective_user.id if update.effective_user else 0
+    exists = _store(context).contains(query)
+    _record_check(context, user_id, query, exists)
+    await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
+
+    username = update.effective_user.username if update.effective_user else ""
+    status = "Найдено" if exists else "Не найдено"
+    await _send_audit_message(context, user_id, username or "", "Проверка строки", f"Запрос: <code>{escape(query)}</code> | Результат: {status}")
 
 
 
@@ -270,14 +346,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Использование: /check <строка>")
         return
 
-    user_id = update.effective_user.id if update.effective_user else 0
-    if not _try_charge_balance(context, user_id, 1):
-        await update.message.reply_text("Недостаточно баланса. Стоимость проверки: $1")
-        return
-
-    exists = _store(context).contains(query)
-    _record_check(context, user_id, query, exists)
-    await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
+    await _run_check(update, context, query)
 
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -304,13 +373,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if step == "await_check_query":
         context.user_data["step"] = None
-        user_id = update.effective_user.id if update.effective_user else 0
-        if not _try_charge_balance(context, user_id, 1):
-            await update.message.reply_text("Недостаточно баланса. Стоимость проверки: $1")
-            return
-        exists = _store(context).contains(text)
-        _record_check(context, user_id, text, exists)
-        await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
+        await _run_check(update, context, text)
         return
 
     if step == "await_grant_balance":
@@ -383,67 +446,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         context.user_data["step"] = None
         await update.message.reply_text(ADMIN_HELP, reply_markup=_admin_keyboard())
-        return
-
-    if text == "💳 Выдать баланс":
-        user_id = update.effective_user.id if update.effective_user else 0
-        if not _is_admin(user_id, _settings(context)):
-            await update.message.reply_text("У вас нет доступа к админке")
-            return
-
-        context.user_data["step"] = "await_grant_balance"
-        await update.message.reply_text("Введите: <user_id> <amount> для выдачи баланса в $")
-        return
-
-    if text == "🧾 Отчет по пользователю":
-        user_id = update.effective_user.id if update.effective_user else 0
-        if not _is_admin(user_id, _settings(context)):
-            await update.message.reply_text("У вас нет доступа к админке")
-            return
-
-        context.user_data["step"] = "await_admin_user_report"
-        await update.message.reply_text("Введите user_id пользователя для подробного отчета.")
-        return
-
-    if text == "📦 Выгрузка пользователя":
-        user_id = update.effective_user.id if update.effective_user else 0
-        if not _is_admin(user_id, _settings(context)):
-            await update.message.reply_text("У вас нет доступа к админке")
-            return
-
-        context.user_data["step"] = "await_admin_export_user"
-        await update.message.reply_text("Введите user_id пользователя для полного экспорта данных.")
-        return
-
-    if text == "👥 Список пользователей":
-        user_id = update.effective_user.id if update.effective_user else 0
-        if not _is_admin(user_id, _settings(context)):
-            await update.message.reply_text("У вас нет доступа к админке")
-            return
-
-        users = _store(context).list_known_users(limit=100)
-        if not users:
-            await update.message.reply_text("В системе пока нет пользователей с активностью.")
-            return
-        rendered = "\n".join(
-            f"{user.user_id} — {_render_user_link(user.user_id, user.username)}"
-            for user in users
-        )
-        await update.message.reply_text(
-            f"👥 Пользователи (до 100):\n{rendered}",
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
+        await update.message.reply_text("Выберите действие:", reply_markup=_admin_panel_keyboard())
         return
 
     if "\n" not in text:
-        user_id = update.effective_user.id if update.effective_user else 0
-        if not _try_charge_balance(context, user_id, 1):
-            await update.message.reply_text("Недостаточно баланса. Стоимость проверки: $1")
-            return
-        exists = _store(context).contains(text)
-        _record_check(context, user_id, text, exists)
-        await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
+        await _run_check(update, context, text)
         return
 
     report = import_text_blob(_store(context), text, batch_size=_settings(context).import_batch_size)
@@ -469,9 +476,6 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     user_id = update.effective_user.id if update.effective_user else 0
-    if not _try_charge_balance(context, user_id, 2):
-        await update.message.reply_text("Недостаточно баланса. Стоимость проверки файлом: $2")
-        return
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -503,6 +507,53 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await update.message.reply_text(WAIT_FOR_CHECK)
     await update.message.reply_text(await upload_processed(report.inserted))
+    username = update.effective_user.username if update.effective_user else ""
+    await _send_audit_file(context, user_id, username or "", filename, stored_path, report.total_lines, report.inserted)
+
+
+async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    await query.answer()
+    user_id = update.effective_user.id if update.effective_user else 0
+    if not _is_admin(user_id, _settings(context)):
+        await query.message.reply_text("У вас нет доступа к админке")
+        return
+
+    action = query.data or ""
+    context.user_data["step"] = None
+
+    if action == "admin:grant_balance":
+        context.user_data["step"] = "await_grant_balance"
+        await query.message.reply_text("Введите: <user_id> <amount> для выдачи баланса в $")
+        return
+
+    if action == "admin:user_report":
+        context.user_data["step"] = "await_admin_user_report"
+        await query.message.reply_text("Введите user_id пользователя для подробного отчета.")
+        return
+
+    if action == "admin:export_user":
+        context.user_data["step"] = "await_admin_export_user"
+        await query.message.reply_text("Введите user_id пользователя для полного экспорта данных.")
+        return
+
+    if action == "admin:list_users":
+        users = _store(context).list_known_users(limit=100)
+        if not users:
+            await query.message.reply_text("В системе пока нет пользователей с активностью.")
+            return
+        rendered = "\n".join(
+            f"{user.user_id} — {_render_user_link(user.user_id, user.username)}"
+            for user in users
+        )
+        await query.message.reply_text(
+            f"👥 Пользователи (до 100):\n{rendered}",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
 
 
 async def post_init(app: Application) -> None:
@@ -530,6 +581,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("check", check))
     app.add_handler(CommandHandler("add", add))
+    app.add_handler(CallbackQueryHandler(on_admin_callback, pattern=r"^admin:"))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     return app
