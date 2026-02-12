@@ -105,3 +105,34 @@ def test_balance_upload_history_and_checks(tmp_path: Path):
         assert username_map[200] == "second_user"
     finally:
         db.close()
+
+
+def test_insert_many_updates_plain_text_database_files(tmp_path: Path):
+    db = HashStore(tmp_path / "test.sqlite3")
+    try:
+        result = db.insert_many([" one@example.com:pass ", "", "one@example.com:pass", "two@example.com:qwerty"])
+        assert result.inserted == 2
+        assert result.skipped_empty == 1
+
+        snapshot = (tmp_path / "database_lines.txt").read_text(encoding="utf-8")
+        assert "one@example.com:pass" in snapshot
+        assert "two@example.com:qwerty" in snapshot
+
+        updates = (tmp_path / "database_updates.log").read_text(encoding="utf-8")
+        assert "Добавлены новые строки: 2" in updates
+        assert "+ one@example.com:pass" in updates
+        assert "+ two@example.com:qwerty" in updates
+    finally:
+        db.close()
+
+
+def test_insert_one_appends_txt_diff_on_new_line_only(tmp_path: Path):
+    db = HashStore(tmp_path / "test.sqlite3")
+    try:
+        assert db.insert_one("alpha@example.com:pass") is True
+        assert db.insert_one("alpha@example.com:pass") is False
+
+        updates = (tmp_path / "database_updates.log").read_text(encoding="utf-8")
+        assert updates.count("+ alpha@example.com:pass") == 1
+    finally:
+        db.close()

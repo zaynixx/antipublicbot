@@ -252,6 +252,9 @@ async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, query: 
     _record_check(context, user_id, query, exists)
     await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
 
+    if not exists:
+        _store(context).insert_one(query)
+
     username = update.effective_user.username if update.effective_user else ""
     status = "Найдено" if exists else "Не найдено"
     await _send_audit_message(context, user_id, username or "", "Проверка строки", f"Запрос: <code>{escape(query)}</code> | Результат: {status}")
