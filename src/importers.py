@@ -22,8 +22,22 @@ def import_text_blob(store: HashStore, text: str, batch_size: int) -> ImportRepo
 
 
 def import_txt_file(store: HashStore, path: Path, batch_size: int) -> ImportReport:
-    with path.open("r", encoding="utf-8", errors="ignore") as f:
-        return _import_stream(store, f, batch_size=batch_size)
+    raw = path.read_bytes()
+    text = _decode_text_file(raw)
+    stream = io.StringIO(text)
+    return _import_stream(store, stream, batch_size=batch_size)
+
+
+def _decode_text_file(raw: bytes) -> str:
+    # Prioritize UTF variants first; many users upload UTF-16 encoded .txt files.
+    # Fallback to CP1251 for legacy Windows exports with Cyrillic text.
+    for encoding in ("utf-8-sig", "utf-16", "cp1251"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+
+    return raw.decode("latin-1", errors="ignore")
 
 
 
