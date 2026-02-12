@@ -66,12 +66,23 @@ class KnownUser:
 class HashStore:
     def __init__(self, path: Path, map_size_bytes: int | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._txt_snapshot_path = path.parent / "database_lines.txt"
+        self._txt_updates_path = path.parent / "database_updates.log"
         self._conn = sqlite3.connect(path)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA temp_store=MEMORY")
         self._conn.execute("PRAGMA cache_size=-400000")
         self._conn.execute("CREATE TABLE IF NOT EXISTS hashes (key BLOB PRIMARY KEY)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS known_lines (
+                key BLOB PRIMARY KEY,
+                normalized_line TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -135,31 +146,69 @@ class HashStore:
         row = self._conn.execute("SELECT 1 FROM hashes WHERE key=?", (key,)).fetchone()
         return row is not None
 
+    def _append_txt_update(self, lines: list[str]) -> None:
+        if not lines:
+            return
+
+        timestamp = self._utc_now()
+        with self._txt_snapshot_path.open("a", encoding="utf-8") as snapshot:
+            for line in lines:
+                snapshot.write(f"{line}\n")
+
+        with self._txt_updates_path.open("a", encoding="utf-8") as updates:
+            updates.write(f"\n[{timestamp}] Добавлены новые строки: {len(lines)}\n")
+            for line in lines:
+                updates.write(f"+ {line}\n")
+
     def insert_one(self, line: str) -> bool:
-        key = line_key(line)
+        normalized = normalize_line(line)
+        key = line_key(normalized)
         if not key:
             return False
         cur = self._conn.execute("INSERT OR IGNORE INTO hashes(key) VALUES (?)", (key,))
+        if cur.rowcount == 1:
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO known_lines(key, normalized_line, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (key, normalized, self._utc_now()),
+            )
         self._conn.commit()
+        if cur.rowcount == 1:
+            self._append_txt_update([normalized])
         return cur.rowcount == 1
 
     def insert_many(self, lines: Iterable[str]) -> InsertResult:
         inserted = 0
         skipped_empty = 0
-        keys: list[tuple[bytes]] = []
+        pending: list[tuple[bytes, str]] = []
 
         for line in lines:
-            key = line_key(line)
+            normalized = normalize_line(line)
+            key = line_key(normalized)
             if not key:
                 skipped_empty += 1
                 continue
-            keys.append((key,))
+            pending.append((key, normalized))
 
-        if keys:
-            before = self._conn.total_changes
-            self._conn.executemany("INSERT OR IGNORE INTO hashes(key) VALUES (?)", keys)
+        new_lines: list[str] = []
+        if pending:
+            timestamp = self._utc_now()
+            for key, normalized in pending:
+                cur = self._conn.execute("INSERT OR IGNORE INTO hashes(key) VALUES (?)", (key,))
+                if cur.rowcount == 1:
+                    self._conn.execute(
+                        """
+                        INSERT OR IGNORE INTO known_lines(key, normalized_line, created_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (key, normalized, timestamp),
+                    )
+                    inserted += 1
+                    new_lines.append(normalized)
             self._conn.commit()
-            inserted = self._conn.total_changes - before
+            self._append_txt_update(new_lines)
 
         return InsertResult(inserted=inserted, skipped_empty=skipped_empty)
 
