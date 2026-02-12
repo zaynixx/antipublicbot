@@ -23,22 +23,6 @@ async def welcome(name: str) -> str:
 Надеюсь мы с тобой отлично сработаемся!"""
 
 
-async def req_welcome(name: str) -> str:
-    return f"""<b>🙋🏼 Добро пожаловать, {name},
-Для того , что бы начать работать с нами тебе нужно подтвердить , что ты не робот. Отправь мне свою заявку  по шаблону ниже.</b>
-
-1. Твоя ссылка на профиль профиль
-(если его нет , то пиши минус)
-2. Укажи происхождение своих логов
-(личные, инсталы, название клауда)"""
-
-
-REQ_ACCESS_PROFILE = """Введите ссылку на профиль"""
-REQ_ACCESS_ORIGIN = """Укажите происхождение логов"""
-REQ_ACCESS_COMPLETE = """Заявка отправлена на рассмотрение"""
-REQ_ACCESS_ON_HOLD = """Ваша заявка находится на рассмотрении"""
-REQ_ACCESS_ON_ACCEPTED = """Ваша заявка принята"""
-
 SUPPORT = """📞 Тех поддержка - @rezer_2281
 Постараемся решить вашу проблему !"""
 
@@ -54,9 +38,6 @@ RULES = """❗️ Правила
 3. Проверка самописным чекером с приватными прокси.
 
 Если у вас остались вопросы — @rezer_2281"""
-
-MANUAL = """Содержание:
-Описание кнопок, мануал по сортировке и загрузке файлов"""
 
 SEND_TEXT_FILE = """Отправьте мне Текстовый документ с аккаунтами в формате:  mail:password."""
 SEND_FILE_LINK = """Пожалуйста загрузите ваши passwords.txt"""
@@ -74,10 +55,8 @@ async def added_balance(unique_count: int) -> str:
 def _main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton("📝 Подать заявку"), KeyboardButton("📜 Правила")],
-            [KeyboardButton("🛟 Поддержка"), KeyboardButton("📘 Мануал")],
-            [KeyboardButton("📂 Загрузить файл"), KeyboardButton("📊 Статистика")],
-            [KeyboardButton("🔍 Проверить строку")],
+            [KeyboardButton("📜 Правила"), KeyboardButton("🛟 Поддержка")],
+            [KeyboardButton("📂 Загрузить файл"), KeyboardButton("🔍 Проверить строку")],
         ],
         resize_keyboard=True,
     )
@@ -94,20 +73,6 @@ def _settings(ctx: ContextTypes.DEFAULT_TYPE) -> Settings:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     name = update.effective_user.first_name if update.effective_user else "пользователь"
     await update.message.reply_text(await welcome(name), reply_markup=_main_keyboard())
-    await update.message.reply_html(await req_welcome(name))
-
-
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    stat = _store(context).stat()
-    await update.message.reply_text(
-        "\n".join(
-            [
-                f"Entries: {stat['entries']}",
-                f"Map size: {stat['map_size']}",
-                f"Last page: {stat['last_pgno']}",
-            ]
-        )
-    )
 
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -139,35 +104,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     step = context.user_data.get("step")
-    if step == "await_profile":
-        context.user_data["request_profile"] = text
-        context.user_data["step"] = "await_origin"
-        await update.message.reply_text(REQ_ACCESS_ORIGIN)
-        return
-
-    if step == "await_origin":
-        context.user_data["request_origin"] = text
-        context.user_data["step"] = None
-        context.user_data["request_status"] = "on_hold"
-        await update.message.reply_text(f"{REQ_ACCESS_COMPLETE}\n{REQ_ACCESS_ON_HOLD}")
-        return
 
     if step == "await_check_query":
         context.user_data["step"] = None
         exists = _store(context).contains(text)
         await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
-        return
-
-    if text == "📝 Подать заявку":
-        status = context.user_data.get("request_status")
-        if status == "accepted":
-            await update.message.reply_text(REQ_ACCESS_ON_ACCEPTED)
-            return
-        if status == "on_hold":
-            await update.message.reply_text(REQ_ACCESS_ON_HOLD)
-            return
-        context.user_data["step"] = "await_profile"
-        await update.message.reply_text(REQ_ACCESS_PROFILE)
         return
 
     if text == "📜 Правила":
@@ -178,16 +119,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(SUPPORT)
         return
 
-    if text == "📘 Мануал":
-        await update.message.reply_text(MANUAL)
-        return
-
     if text == "📂 Загрузить файл":
         await update.message.reply_text(f"{SEND_TEXT_FILE}\n{SEND_FILE_LINK}")
-        return
-
-    if text == "📊 Статистика":
-        await stats(update, context)
         return
 
     if text == "🔍 Проверить строку":
@@ -259,7 +192,6 @@ def build_app() -> Application:
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("check", check))
     app.add_handler(CommandHandler("add", add))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
