@@ -4,13 +4,7 @@ import tempfile
 from pathlib import Path
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .config import Settings, load_settings
 from .importers import import_text_blob, import_txt_file
@@ -45,9 +39,10 @@ WAIT_FOR_CHECK = """❗️ Проверяю строки на уникально
 После этого сообщения выдам результаты."""
 
 
-async def added_balance(unique_count: int) -> str:
+async def added_balance(unique_count: int, balance: int) -> str:
     return f"""Ваш файл был обработан.
 Уникальных строк: {unique_count}
+Ваш баланс: {balance}
 Бот бесплатный — спасибо что работаете с нами!
 """
 
@@ -57,6 +52,18 @@ def _main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton("📜 Правила"), KeyboardButton("🛟 Поддержка")],
             [KeyboardButton("📂 Загрузить файл"), KeyboardButton("🔍 Проверить строку")],
+            [KeyboardButton("👤 Профиль")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def _admin_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("📜 Правила"), KeyboardButton("🛟 Поддержка")],
+            [KeyboardButton("📂 Загрузить файл"), KeyboardButton("🔍 Проверить строку")],
+            [KeyboardButton("👤 Профиль"), KeyboardButton("🛠 Админка")],
         ],
         resize_keyboard=True,
     )
@@ -70,9 +77,26 @@ def _settings(ctx: ContextTypes.DEFAULT_TYPE) -> Settings:
     return ctx.application.bot_data["settings"]
 
 
+def _is_admin(user_id: int, settings: Settings) -> bool:
+    return user_id in settings.admin_ids
+
+
+def _render_history(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
+    records = _store(ctx).get_recent_uploads(user_id)
+    if not records:
+        return "История файлов пуста."
+
+    rows = ["История последних загрузок:"]
+    for rec in records:
+        rows.append(f"• {rec.created_at} — {rec.filename} (уникальных: {rec.inserted}/{rec.total_lines})")
+    return "\n".join(rows)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     name = update.effective_user.first_name if update.effective_user else "пользователь"
-    await update.message.reply_text(await welcome(name), reply_markup=_main_keyboard())
+    user_id = update.effective_user.id if update.effective_user else 0
+    kb = _admin_keyboard() if _is_admin(user_id, _settings(context)) else _main_keyboard()
+    await update.message.reply_text(await welcome(name), reply_markup=kb)
 
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -111,6 +135,23 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
         return
 
+    if step == "await_grant_balance":
+        parts = text.split()
+        if len(parts) != 2:
+            await update.message.reply_text("Формат: <user_id> <amount>")
+            return
+        try:
+            target_user_id = int(parts[0])
+            amount = int(parts[1])
+        except ValueError:
+            await update.message.reply_text("Нужны целые числа: <user_id> <amount>")
+            return
+
+        new_balance = _store(context).add_balance(target_user_id, amount)
+        context.user_data["step"] = None
+        await update.message.reply_text(f"Баланс обновлен. user_id={target_user_id}, новый баланс={new_balance}")
+        return
+
     if text == "📜 Правила":
         await update.message.reply_text(RULES)
         return
@@ -126,6 +167,23 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if text == "🔍 Проверить строку":
         context.user_data["step"] = "await_check_query"
         await update.message.reply_text("Отправьте строку для проверки")
+        return
+
+    if text == "👤 Профиль":
+        user_id = update.effective_user.id if update.effective_user else 0
+        balance = _store(context).get_balance(user_id)
+        history = _render_history(context, user_id)
+        await update.message.reply_text(f"Ваш ID: {user_id}\nБаланс: {balance}\n\n{history}")
+        return
+
+    if text == "🛠 Админка":
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not _is_admin(user_id, _settings(context)):
+            await update.message.reply_text("У вас нет доступа к админке")
+            return
+
+        context.user_data["step"] = "await_grant_balance"
+        await update.message.reply_text("Введите: <user_id> <amount> для выдачи баланса")
         return
 
     if "\n" not in text:
@@ -165,8 +223,12 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             batch_size=_settings(context).import_batch_size,
         )
 
+    user_id = update.effective_user.id if update.effective_user else 0
+    new_balance = _store(context).add_balance(user_id, report.inserted)
+    _store(context).record_upload(user_id, filename, report.inserted, report.total_lines)
+
     await update.message.reply_text(WAIT_FOR_CHECK)
-    await update.message.reply_text(await added_balance(report.inserted))
+    await update.message.reply_text(await added_balance(report.inserted, new_balance))
 
 
 async def post_init(app: Application) -> None:
