@@ -5,6 +5,7 @@ from pathlib import Path
 from shutil import copy2
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .config import Settings, load_settings
@@ -39,6 +40,14 @@ RULES = """📜 Правила работы
 SEND_TEXT_FILE = "📂 Отправьте текстовый файл с аккаунтами в формате: mail:password."
 SEND_FILE_LINK = "Принимаются файлы вида passwords.txt"
 WAIT_FOR_CHECK = "⏳ Файл принят в обработку. Проверяю строки на уникальность..."
+FILE_TOO_BIG_MSG = (
+    "❌ Файл слишком большой для обработки через Telegram Bot API. "
+    "Попробуйте файл поменьше или загрузите его локально через `python -m src.bootstrap`"
+)
+FILE_UPLOAD_ERROR_MSG = (
+    "❌ Не удалось обработать файл. Проверьте, что это корректный текстовый .txt файл, "
+    "и попробуйте снова."
+)
 
 ADMIN_HELP = """🛠 Админ-панель
 Доступные действия:
@@ -393,21 +402,31 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("Недостаточно баланса. Стоимость проверки файлом: $2")
         return
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        path = Path(tmpdir) / filename
-        telegram_file = await context.bot.get_file(doc.file_id)
-        await telegram_file.download_to_drive(str(path))
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / filename
+            telegram_file = await context.bot.get_file(doc.file_id)
+            await telegram_file.download_to_drive(str(path))
 
-        upload_dir = _settings(context).db_path.parent / "uploads" / str(user_id)
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        stored_path = upload_dir / f"{doc.file_id}_{filename}"
-        copy2(path, stored_path)
+            upload_dir = _settings(context).db_path.parent / "uploads" / str(user_id)
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            stored_path = upload_dir / f"{doc.file_id}_{filename}"
+            copy2(path, stored_path)
 
-        report = import_txt_file(
-            _store(context),
-            path,
-            batch_size=_settings(context).import_batch_size,
-        )
+            report = import_txt_file(
+                _store(context),
+                path,
+                batch_size=_settings(context).import_batch_size,
+            )
+    except BadRequest as exc:
+        if "File is too big" in str(exc):
+            await update.message.reply_text(FILE_TOO_BIG_MSG)
+            return
+        await update.message.reply_text(FILE_UPLOAD_ERROR_MSG)
+        return
+    except (OSError, UnicodeError, TelegramError):
+        await update.message.reply_text(FILE_UPLOAD_ERROR_MSG)
+        return
 
     _store(context).record_upload(user_id, filename, report.inserted, report.total_lines, str(stored_path))
 
