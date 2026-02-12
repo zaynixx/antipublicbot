@@ -7,6 +7,15 @@ def test_normalize_line():
     assert normalize_line("  a   b\t c  ") == "a b c"
 
 
+def test_normalize_line_extracts_login_password_pair():
+    assert normalize_line("ma937641@wipro.com:Pestejud123.") == "ma937641@wipro.com:Pestejud123."
+    assert normalize_line("  ma937641@wipro.com | Pestejud123.  ") == "ma937641@wipro.com:Pestejud123."
+    assert (
+        normalize_line("text before 09000739@stccebu.online ; 07282010!Ae extra")
+        == "09000739@stccebu.online:07282010!Ae"
+    )
+
+
 def test_line_key_empty():
     assert line_key("   ") == b""
 
