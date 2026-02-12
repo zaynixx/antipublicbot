@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,7 +9,21 @@ from typing import Iterable
 
 
 def normalize_line(raw: str) -> str:
-    return " ".join(raw.strip().split())
+    compact = " ".join(raw.strip().split())
+    if not compact:
+        return ""
+
+    # Accept messy combos like "email | password", "email;password" and
+    # snippets where the pair is surrounded by additional junk.
+    match = re.search(
+        r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\s*[:;|,\t ]\s*(\S+)",
+        compact,
+    )
+    if match:
+        login, password = match.groups()
+        return f"{login.lower()}:{password}"
+
+    return compact
 
 
 def line_key(line: str) -> bytes:
