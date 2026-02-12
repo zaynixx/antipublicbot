@@ -13,37 +13,46 @@ from .storage import HashStore
 
 
 async def welcome(name: str) -> str:
-    return f"""🤚🏻 Добро пожаловать, {name},
-Это бот по по приему строк Login.microsoftonline.com
-Надеюсь мы с тобой отлично сработаемся!"""
+    return (
+        f"👋 Добро пожаловать, {name}!\n"
+        "Это бот для проверки и приема строк Login.microsoftonline.com.\n"
+        "Работаем аккуратно, прозрачно и по понятным правилам."
+    )
 
 
-SUPPORT = """📞 Тех поддержка - @rezer_2281
-Постараемся решить вашу проблему !"""
+SUPPORT = """🛟 Поддержка: @rezer_2281
+Если возникнут вопросы — обязательно поможем."""
 
-RULES = """❗️ Правила
-При использовании данного бота, вы соглашаетесь на то, что мы выполняем свою работу корректно.
-В дополнении согласны с тем, что результаты после проверки — верные.
-Оскорбления в адрес бота или нас — бан в боте.
+RULES = """📜 Правила работы
+Используя бота, вы подтверждаете, что:
+• согласны с правилами проверки,
+• принимаете результаты проверки,
+• соблюдаете уважительное общение.
 
-Отработка строк происходит следующим образом:
-1. Бот принимает ваши строки и сверяет их на уникальность в нашей базе.
-2. С помощью регулярок в notepad++ удаляются не нужные строки.
-3. Проверка самописным чекером с приватными прокси.
+Как проходит обработка:
+1) Загружаем строки и проверяем уникальность в базе.
+2) Очищаем мусор и приводим формат к валидному виду.
+3) Прогоняем через рабочий чекер и приватные прокси.
 
-Если у вас остались вопросы — @rezer_2281"""
+По всем вопросам: @rezer_2281"""
 
-SEND_TEXT_FILE = """Отправьте мне Текстовый документ с аккаунтами в формате:  mail:password."""
-SEND_FILE_LINK = """Пожалуйста загрузите ваши passwords.txt"""
-WAIT_FOR_CHECK = """❗️ Проверяю строки на уникальность...
-После этого сообщения выдам результаты."""
+SEND_TEXT_FILE = "📂 Отправьте текстовый файл с аккаунтами в формате: mail:password."
+SEND_FILE_LINK = "Принимаются файлы вида passwords.txt"
+WAIT_FOR_CHECK = "⏳ Файл принят в обработку. Проверяю строки на уникальность..."
+
+ADMIN_HELP = """🛠 Админ-панель
+Доступные действия:
+• 💳 Выдать баланс — начислить средства пользователю.
+• 🧾 Отчет по пользователю — подробная статистика и уникальные поисковые строки.
+• 👥 Список пользователей — пользователи, замеченные в системе."""
 
 
 async def upload_processed(unique_count: int) -> str:
-    return f"""Ваш файл был обработан.
-Уникальных строк: {unique_count}
-Спасибо что работаете с нами!
-"""
+    return (
+        "✅ Обработка завершена.\n"
+        f"Уникальных строк добавлено: {unique_count}\n"
+        "Файл принят в работу ожидайте результатов"
+    )
 
 
 def _main_keyboard() -> ReplyKeyboardMarkup:
@@ -88,14 +97,67 @@ def _try_charge_balance(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, amount: in
 def _render_history(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
     records = _store(ctx).get_recent_uploads(user_id)
     if not records:
-        return "История файлов пуста."
+        return "История файлов пока пуста."
 
-    rows = ["История последних загрузок:"]
+    rows = ["📚 История последних загрузок:"]
     for idx, rec in enumerate(records, start=1):
         rows.append(
             f"{idx}) {rec.created_at} — {rec.filename} (уникальных: {rec.inserted}/{rec.total_lines})"
         )
     return "\n".join(rows)
+
+
+def _render_user_admin_report(ctx: ContextTypes.DEFAULT_TYPE, target_user_id: int) -> str:
+    store = _store(ctx)
+    stats = store.get_user_stats(target_user_id)
+    recent_uploads = store.get_recent_uploads(target_user_id, limit=5)
+    recent_checks = store.get_recent_checks(target_user_id, limit=10)
+    unique_checks = store.get_unique_checked_queries(target_user_id, limit=20)
+
+    lines = [
+        f"🧾 Детальный отчет по user_id={target_user_id}",
+        f"Баланс: ${stats['balance']}",
+        (
+            "Файлы: "
+            f"{stats['uploads_count']} шт., строк всего: {stats['uploads_total_lines']}, "
+            f"уникально добавлено: {stats['uploads_total_inserted']}"
+        ),
+        f"Проверок строк: {stats['checks_count']} (найдено: {stats['checks_found']}, не найдено: {stats['checks_not_found']})",
+        f"Уникальных поисковых строк: {stats['unique_checks_count']}",
+        "",
+        "Последние загрузки:",
+    ]
+
+    if recent_uploads:
+        for rec in recent_uploads:
+            lines.append(
+                f"• {rec.created_at} — {rec.filename} (уникальных: {rec.inserted}/{rec.total_lines})"
+            )
+    else:
+        lines.append("• Нет загрузок.")
+
+    lines.append("")
+    lines.append("Последние проверки:")
+    if recent_checks:
+        for check in recent_checks:
+            status = "✅" if check.found else "❌"
+            lines.append(f"• {check.created_at} {status} {check.query}")
+    else:
+        lines.append("• Нет проверок.")
+
+    lines.append("")
+    lines.append("Уникальные строки из поисков (до 20):")
+    if unique_checks:
+        for idx, query in enumerate(unique_checks, start=1):
+            lines.append(f"{idx}. {query}")
+    else:
+        lines.append("• Нет уникальных поисковых строк.")
+
+    return "\n".join(lines)
+
+
+def _record_check(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, query: str, found: bool) -> None:
+    _store(ctx).record_check(user_id, query, found)
 
 
 async def _send_upload_by_history_index(update: Update, context: ContextTypes.DEFAULT_TYPE, index_text: str) -> None:
@@ -148,6 +210,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     exists = _store(context).contains(query)
+    _record_check(context, user_id, query, exists)
     await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
 
 
@@ -178,6 +241,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("Недостаточно баланса. Стоимость проверки: $1")
             return
         exists = _store(context).contains(text)
+        _record_check(context, user_id, text, exists)
         await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
         return
 
@@ -195,7 +259,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         new_balance = _store(context).add_balance(target_user_id, amount)
         context.user_data["step"] = None
-        await update.message.reply_text(f"Баланс обновлен. user_id={target_user_id}, новый баланс=${new_balance}")
+        await update.message.reply_text(f"✅ Баланс обновлен. user_id={target_user_id}, новый баланс=${new_balance}")
+        return
+
+    if step == "await_admin_user_report":
+        try:
+            target_user_id = int(text)
+        except ValueError:
+            await update.message.reply_text("Введите корректный user_id (целое число).")
+            return
+
+        context.user_data["step"] = None
+        await update.message.reply_text(_render_user_admin_report(context, target_user_id))
         return
 
     if step == "await_download_upload":
@@ -224,13 +299,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_id = update.effective_user.id if update.effective_user else 0
         balance = _store(context).get_balance(user_id)
         history = _render_history(context, user_id)
-        await update.message.reply_text(f"Ваш ID: {user_id}\nБаланс: ${balance}\n\n{history}")
+        await update.message.reply_text(f"👤 Ваш ID: {user_id}\n💰 Баланс: ${balance}\n\n{history}")
         return
 
     if text == "📥 Скачать файл":
         user_id = update.effective_user.id if update.effective_user else 0
         history = _render_history(context, user_id)
-        if history == "История файлов пуста.":
+        if history == "История файлов пока пуста.":
             await update.message.reply_text(history)
             return
 
@@ -244,8 +319,42 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("У вас нет доступа к админке")
             return
 
+        context.user_data["step"] = None
+        await update.message.reply_text(ADMIN_HELP)
+        return
+
+    if text == "💳 Выдать баланс":
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not _is_admin(user_id, _settings(context)):
+            await update.message.reply_text("У вас нет доступа к админке")
+            return
+
         context.user_data["step"] = "await_grant_balance"
         await update.message.reply_text("Введите: <user_id> <amount> для выдачи баланса в $")
+        return
+
+    if text == "🧾 Отчет по пользователю":
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not _is_admin(user_id, _settings(context)):
+            await update.message.reply_text("У вас нет доступа к админке")
+            return
+
+        context.user_data["step"] = "await_admin_user_report"
+        await update.message.reply_text("Введите user_id пользователя для подробного отчета.")
+        return
+
+    if text == "👥 Список пользователей":
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not _is_admin(user_id, _settings(context)):
+            await update.message.reply_text("У вас нет доступа к админке")
+            return
+
+        users = _store(context).list_known_user_ids(limit=100)
+        if not users:
+            await update.message.reply_text("В системе пока нет пользователей с активностью.")
+            return
+        rendered = "\n".join(str(uid) for uid in users)
+        await update.message.reply_text(f"👥 Пользователи (до 100):\n{rendered}")
         return
 
     if "\n" not in text:
@@ -254,6 +363,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("Недостаточно баланса. Стоимость проверки: $1")
             return
         exists = _store(context).contains(text)
+        _record_check(context, user_id, text, exists)
         await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
         return
 
