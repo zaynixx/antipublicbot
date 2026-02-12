@@ -82,6 +82,11 @@ def _admin_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton("📂 Загрузить файл"), KeyboardButton("🔍 Проверить строку")],
             [KeyboardButton("👤 Профиль"), KeyboardButton("📥 Скачать файл")],
             [KeyboardButton("🛠 Админка")],
+            [
+                KeyboardButton("💳 Выдать баланс"),
+                KeyboardButton("🧾 Отчет по пользователю"),
+            ],
+            [KeyboardButton("👥 Список пользователей")],
         ],
         resize_keyboard=True,
     )
@@ -329,7 +334,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         context.user_data["step"] = None
-        await update.message.reply_text(ADMIN_HELP)
+        await update.message.reply_text(ADMIN_HELP, reply_markup=_admin_keyboard())
         return
 
     if text == "💳 Выдать баланс":
