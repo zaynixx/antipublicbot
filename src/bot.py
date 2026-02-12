@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from telegram import Update
+from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -17,6 +17,72 @@ from .importers import import_text_blob, import_txt_file
 from .storage import HashStore
 
 
+async def welcome(name: str) -> str:
+    return f"""🤚🏻 Добро пожаловать, {name},
+Это бот по по приему строк Login.microsoftonline.com
+Надеюсь мы с тобой отлично сработаемся!"""
+
+
+async def req_welcome(name: str) -> str:
+    return f"""<b>🙋🏼 Добро пожаловать, {name},
+Для того , что бы начать работать с нами тебе нужно подтвердить , что ты не робот. Отправь мне свою заявку  по шаблону ниже.</b>
+
+1. Твоя ссылка на профиль профиль
+(если его нет , то пиши минус)
+2. Укажи происхождение своих логов
+(личные, инсталы, название клауда)"""
+
+
+REQ_ACCESS_PROFILE = """Введите ссылку на профиль"""
+REQ_ACCESS_ORIGIN = """Укажите происхождение логов"""
+REQ_ACCESS_COMPLETE = """Заявка отправлена на рассмотрение"""
+REQ_ACCESS_ON_HOLD = """Ваша заявка находится на рассмотрении"""
+REQ_ACCESS_ON_ACCEPTED = """Ваша заявка принята"""
+
+SUPPORT = """📞 Тех поддержка - @rezer_2281
+Постараемся решить вашу проблему !"""
+
+RULES = """❗️ Правила
+При использовании данного бота, вы соглашаетесь на то, что мы выполняем свою работу корректно.
+В дополнении согласны с тем, что результаты после проверки — верные.
+Оскорбления в адрес бота или нас — бан в боте.
+
+Бот бесплатный.
+Отработка строк происходит следующим образом:
+1. Бот принимает ваши строки и сверяет их на уникальность в нашей базе.
+2. С помощью регулярок в notepad++ удаляются не нужные строки.
+3. Проверка самописным чекером с приватными прокси.
+
+Если у вас остались вопросы — @rezer_2281"""
+
+MANUAL = """Содержание:
+Описание кнопок, мануал по сортировке и загрузке файлов"""
+
+SEND_TEXT_FILE = """Отправьте мне Текстовый документ с аккаунтами в формате:  mail:password."""
+SEND_FILE_LINK = """Пожалуйста загрузите ваши passwords.txt"""
+WAIT_FOR_CHECK = """❗️ Проверяю строки на уникальность...
+После этого сообщения выдам результаты."""
+
+
+async def added_balance(unique_count: int) -> str:
+    return f"""Ваш файл был обработан.
+Уникальных строк: {unique_count}
+Бот бесплатный — спасибо что работаете с нами!
+"""
+
+
+def _main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("📝 Подать заявку"), KeyboardButton("📜 Правила")],
+            [KeyboardButton("🛟 Поддержка"), KeyboardButton("📘 Мануал")],
+            [KeyboardButton("📂 Загрузить файл"), KeyboardButton("📊 Статистика")],
+            [KeyboardButton("🔍 Проверить строку")],
+        ],
+        resize_keyboard=True,
+    )
+
+
 def _store(ctx: ContextTypes.DEFAULT_TYPE) -> HashStore:
     return ctx.application.bot_data["store"]
 
@@ -26,15 +92,9 @@ def _settings(ctx: ContextTypes.DEFAULT_TYPE) -> Settings:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (
-        "Привет! Я anti-public бот.\n\n"
-        "Команды:\n"
-        "/check <строка> — проверить наличие\n"
-        "/add <строка> — добавить 1 строку\n"
-        "/stats — статистика\n\n"
-        "Также можно прислать обычный текст или .txt файл до 50MB."
-    )
-    await update.message.reply_text(text)
+    name = update.effective_user.first_name if update.effective_user else "пользователь"
+    await update.message.reply_text(await welcome(name), reply_markup=_main_keyboard())
+    await update.message.reply_html(await req_welcome(name))
 
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -78,6 +138,63 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not text:
         return
 
+    step = context.user_data.get("step")
+    if step == "await_profile":
+        context.user_data["request_profile"] = text
+        context.user_data["step"] = "await_origin"
+        await update.message.reply_text(REQ_ACCESS_ORIGIN)
+        return
+
+    if step == "await_origin":
+        context.user_data["request_origin"] = text
+        context.user_data["step"] = None
+        context.user_data["request_status"] = "on_hold"
+        await update.message.reply_text(f"{REQ_ACCESS_COMPLETE}\n{REQ_ACCESS_ON_HOLD}")
+        return
+
+    if step == "await_check_query":
+        context.user_data["step"] = None
+        exists = _store(context).contains(text)
+        await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
+        return
+
+    if text == "📝 Подать заявку":
+        status = context.user_data.get("request_status")
+        if status == "accepted":
+            await update.message.reply_text(REQ_ACCESS_ON_ACCEPTED)
+            return
+        if status == "on_hold":
+            await update.message.reply_text(REQ_ACCESS_ON_HOLD)
+            return
+        context.user_data["step"] = "await_profile"
+        await update.message.reply_text(REQ_ACCESS_PROFILE)
+        return
+
+    if text == "📜 Правила":
+        await update.message.reply_text(RULES)
+        return
+
+    if text == "🛟 Поддержка":
+        await update.message.reply_text(SUPPORT)
+        return
+
+    if text == "📘 Мануал":
+        await update.message.reply_text(MANUAL)
+        return
+
+    if text == "📂 Загрузить файл":
+        await update.message.reply_text(f"{SEND_TEXT_FILE}\n{SEND_FILE_LINK}")
+        return
+
+    if text == "📊 Статистика":
+        await stats(update, context)
+        return
+
+    if text == "🔍 Проверить строку":
+        context.user_data["step"] = "await_check_query"
+        await update.message.reply_text("Отправьте строку для проверки")
+        return
+
     if "\n" not in text:
         exists = _store(context).contains(text)
         await update.message.reply_text("✅ Найдено" if exists else "❌ Не найдено")
@@ -115,16 +232,8 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             batch_size=_settings(context).import_batch_size,
         )
 
-    await update.message.reply_text(
-        "\n".join(
-            [
-                "Файл обработан.",
-                f"Строк: {report.total_lines}",
-                f"Добавлено: {report.inserted}",
-                f"Пустых: {report.skipped_empty}",
-            ]
-        )
-    )
+    await update.message.reply_text(WAIT_FOR_CHECK)
+    await update.message.reply_text(await added_balance(report.inserted))
 
 
 async def post_init(app: Application) -> None:
