@@ -42,10 +42,12 @@ class InsertResult:
 
 @dataclass(slots=True)
 class UploadRecord:
+    id: int
     filename: str
     inserted: int
     total_lines: int
     created_at: str
+    stored_path: str
 
 
 class HashStore:
@@ -74,11 +76,18 @@ class HashStore:
                 filename TEXT NOT NULL,
                 inserted INTEGER NOT NULL,
                 total_lines INTEGER NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                stored_path TEXT
             )
             """
         )
+        if not self._has_uploads_stored_path():
+            self._conn.execute("ALTER TABLE uploads ADD COLUMN stored_path TEXT")
         self._conn.commit()
+
+    def _has_uploads_stored_path(self) -> bool:
+        cols = self._conn.execute("PRAGMA table_info(uploads)").fetchall()
+        return any(col[1] == "stored_path" for col in cols)
 
     @staticmethod
     def _utc_now() -> str:
@@ -149,20 +158,43 @@ class HashStore:
         self._conn.commit()
         return self.get_balance(user_id)
 
-    def record_upload(self, user_id: int, filename: str, inserted: int, total_lines: int) -> None:
+    def spend_balance(self, user_id: int, amount: int) -> bool:
+        if amount <= 0:
+            return True
+
+        now = self._utc_now()
+        cur = self._conn.execute(
+            """
+            UPDATE users
+            SET balance = balance - ?, updated_at = ?
+            WHERE user_id = ? AND balance >= ?
+            """,
+            (amount, now, user_id, amount),
+        )
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    def record_upload(
+        self,
+        user_id: int,
+        filename: str,
+        inserted: int,
+        total_lines: int,
+        stored_path: str | None = None,
+    ) -> None:
         self._conn.execute(
             """
-            INSERT INTO uploads(user_id, filename, inserted, total_lines, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO uploads(user_id, filename, inserted, total_lines, created_at, stored_path)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (user_id, filename, inserted, total_lines, self._utc_now()),
+            (user_id, filename, inserted, total_lines, self._utc_now(), stored_path),
         )
         self._conn.commit()
 
     def get_recent_uploads(self, user_id: int, limit: int = 5) -> list[UploadRecord]:
         rows = self._conn.execute(
             """
-            SELECT filename, inserted, total_lines, created_at
+            SELECT id, filename, inserted, total_lines, created_at, COALESCE(stored_path, '')
             FROM uploads
             WHERE user_id=?
             ORDER BY id DESC
@@ -171,3 +203,14 @@ class HashStore:
             (user_id, limit),
         ).fetchall()
         return [UploadRecord(*row) for row in rows]
+
+    def get_upload(self, user_id: int, upload_id: int) -> UploadRecord | None:
+        row = self._conn.execute(
+            """
+            SELECT id, filename, inserted, total_lines, created_at, COALESCE(stored_path, '')
+            FROM uploads
+            WHERE user_id=? AND id=?
+            """,
+            (user_id, upload_id),
+        ).fetchone()
+        return UploadRecord(*row) if row else None

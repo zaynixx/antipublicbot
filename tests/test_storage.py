@@ -37,14 +37,24 @@ def test_balance_and_upload_history(tmp_path: Path):
         assert db.get_balance(100) == 0
         assert db.add_balance(100, 15) == 15
         assert db.add_balance(100, 5) == 20
+        assert db.spend_balance(100, 7) is True
+        assert db.get_balance(100) == 13
+        assert db.spend_balance(100, 100) is False
+        assert db.get_balance(100) == 13
 
-        db.record_upload(100, "a.txt", inserted=3, total_lines=4)
-        db.record_upload(100, "b.txt", inserted=7, total_lines=9)
+        db.record_upload(100, "a.txt", inserted=3, total_lines=4, stored_path="/tmp/a.txt")
+        db.record_upload(100, "b.txt", inserted=7, total_lines=9, stored_path="/tmp/b.txt")
 
         history = db.get_recent_uploads(100)
         assert len(history) == 2
+        assert history[0].id > history[1].id
         assert history[0].filename == "b.txt"
         assert history[0].inserted == 7
+        assert history[0].stored_path == "/tmp/b.txt"
         assert history[1].filename == "a.txt"
+
+        picked = db.get_upload(100, history[1].id)
+        assert picked is not None
+        assert picked.filename == "a.txt"
     finally:
         db.close()
