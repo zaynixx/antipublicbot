@@ -57,6 +57,12 @@ class CheckRecord:
     created_at: str
 
 
+@dataclass(slots=True)
+class KnownUser:
+    user_id: int
+    username: str
+
+
 class HashStore:
     def __init__(self, path: Path, map_size_bytes: int | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +77,8 @@ class HashStore:
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 balance INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                username TEXT NOT NULL DEFAULT ''
             )
             """
         )
@@ -102,11 +109,17 @@ class HashStore:
         )
         if not self._has_uploads_stored_path():
             self._conn.execute("ALTER TABLE uploads ADD COLUMN stored_path TEXT")
+        if not self._has_users_username():
+            self._conn.execute("ALTER TABLE users ADD COLUMN username TEXT NOT NULL DEFAULT ''")
         self._conn.commit()
 
     def _has_uploads_stored_path(self) -> bool:
         cols = self._conn.execute("PRAGMA table_info(uploads)").fetchall()
         return any(col[1] == "stored_path" for col in cols)
+
+    def _has_users_username(self) -> bool:
+        cols = self._conn.execute("PRAGMA table_info(users)").fetchall()
+        return any(col[1] == "username" for col in cols)
 
     @staticmethod
     def _utc_now() -> str:
@@ -158,6 +171,24 @@ class HashStore:
             "last_pgno": 0,
         }
 
+    def touch_user(self, user_id: int, username: str | None = None) -> None:
+        now = self._utc_now()
+        normalized_username = (username or "").strip().lstrip("@")
+        self._conn.execute(
+            """
+            INSERT INTO users(user_id, balance, updated_at, username)
+            VALUES (?, 0, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                username = CASE
+                    WHEN excluded.username != '' THEN excluded.username
+                    ELSE users.username
+                END
+            """,
+            (user_id, now, normalized_username),
+        )
+        self._conn.commit()
+
     def get_balance(self, user_id: int) -> int:
         row = self._conn.execute("SELECT balance FROM users WHERE user_id=?", (user_id,)).fetchone()
         return int(row[0]) if row else 0
@@ -166,8 +197,8 @@ class HashStore:
         now = self._utc_now()
         self._conn.execute(
             """
-            INSERT INTO users(user_id, balance, updated_at)
-            VALUES (?, ?, ?)
+            INSERT INTO users(user_id, balance, updated_at, username)
+            VALUES (?, ?, ?, '')
             ON CONFLICT(user_id) DO UPDATE SET
                 balance = balance + excluded.balance,
                 updated_at = excluded.updated_at
@@ -234,6 +265,18 @@ class HashStore:
         ).fetchall()
         return [UploadRecord(*row) for row in rows]
 
+    def get_all_uploads(self, user_id: int) -> list[UploadRecord]:
+        rows = self._conn.execute(
+            """
+            SELECT id, filename, inserted, total_lines, created_at, COALESCE(stored_path, '')
+            FROM uploads
+            WHERE user_id=?
+            ORDER BY id ASC
+            """,
+            (user_id,),
+        ).fetchall()
+        return [UploadRecord(*row) for row in rows]
+
     def get_recent_checks(self, user_id: int, limit: int = 10) -> list[CheckRecord]:
         rows = self._conn.execute(
             """
@@ -244,6 +287,18 @@ class HashStore:
             LIMIT ?
             """,
             (user_id, limit),
+        ).fetchall()
+        return [CheckRecord(*row) for row in rows]
+
+    def get_all_checks(self, user_id: int) -> list[CheckRecord]:
+        rows = self._conn.execute(
+            """
+            SELECT id, query, normalized_query, found, created_at
+            FROM checks
+            WHERE user_id=?
+            ORDER BY id ASC
+            """,
+            (user_id,),
         ).fetchall()
         return [CheckRecord(*row) for row in rows]
 
@@ -261,24 +316,38 @@ class HashStore:
         ).fetchall()
         return [str(row[0]) for row in rows]
 
-    def list_known_user_ids(self, limit: int = 100) -> list[int]:
+    def get_all_unique_checked_queries(self, user_id: int) -> list[str]:
         rows = self._conn.execute(
             """
-            SELECT user_id
+            SELECT normalized_query
+            FROM checks
+            WHERE user_id=? AND normalized_query != ''
+            GROUP BY normalized_query
+            ORDER BY MIN(id) ASC
+            """,
+            (user_id,),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def list_known_users(self, limit: int = 100) -> list[KnownUser]:
+        rows = self._conn.execute(
+            """
+            SELECT activity.user_id, COALESCE(users.username, '') AS username
             FROM (
                 SELECT user_id, MAX(created_at) AS latest_ts FROM uploads GROUP BY user_id
                 UNION ALL
                 SELECT user_id, MAX(created_at) AS latest_ts FROM checks GROUP BY user_id
                 UNION ALL
                 SELECT user_id, updated_at AS latest_ts FROM users
-            )
-            GROUP BY user_id
-            ORDER BY MAX(latest_ts) DESC
+            ) AS activity
+            LEFT JOIN users ON users.user_id = activity.user_id
+            GROUP BY activity.user_id
+            ORDER BY MAX(activity.latest_ts) DESC
             LIMIT ?
             """,
             (limit,),
         ).fetchall()
-        return [int(row[0]) for row in rows]
+        return [KnownUser(user_id=int(row[0]), username=str(row[1])) for row in rows]
 
     def get_user_stats(self, user_id: int) -> dict[str, int]:
         upload_row = self._conn.execute(

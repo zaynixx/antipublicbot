@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import csv
 import tempfile
+import zipfile
 from pathlib import Path
+from html import escape
 from shutil import copy2
 
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -53,7 +57,8 @@ ADMIN_HELP = """🛠 Админ-панель
 Доступные действия:
 • 💳 Выдать баланс — начислить средства пользователю.
 • 🧾 Отчет по пользователю — подробная статистика и уникальные поисковые строки.
-• 👥 Список пользователей — пользователи, замеченные в системе."""
+• 👥 Список пользователей — пользователи, замеченные в системе.
+• 📦 Выгрузка пользователя — полный экспорт файлов и всех строк пользователя."""
 
 
 async def upload_processed(unique_count: int) -> str:
@@ -69,7 +74,7 @@ def _main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton("📜 Правила"), KeyboardButton("🛟 Поддержка")],
             [KeyboardButton("📂 Загрузить файл"), KeyboardButton("🔍 Проверить строку")],
-            [KeyboardButton("👤 Профиль"), KeyboardButton("📥 Скачать файл")],
+            [KeyboardButton("👤 Профиль")],
         ],
         resize_keyboard=True,
     )
@@ -80,13 +85,14 @@ def _admin_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton("📜 Правила"), KeyboardButton("🛟 Поддержка")],
             [KeyboardButton("📂 Загрузить файл"), KeyboardButton("🔍 Проверить строку")],
-            [KeyboardButton("👤 Профиль"), KeyboardButton("📥 Скачать файл")],
+            [KeyboardButton("👤 Профиль")],
             [KeyboardButton("🛠 Админка")],
             [
                 KeyboardButton("💳 Выдать баланс"),
                 KeyboardButton("🧾 Отчет по пользователю"),
             ],
             [KeyboardButton("👥 Список пользователей")],
+            [KeyboardButton("📦 Выгрузка пользователя")],
         ],
         resize_keyboard=True,
     )
@@ -106,19 +112,6 @@ def _is_admin(user_id: int, settings: Settings) -> bool:
 
 def _try_charge_balance(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, amount: int) -> bool:
     return _store(ctx).spend_balance(user_id, amount)
-
-
-def _render_history(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
-    records = _store(ctx).get_recent_uploads(user_id)
-    if not records:
-        return "История файлов пока пуста."
-
-    rows = ["📚 История последних загрузок:"]
-    for idx, rec in enumerate(records, start=1):
-        rows.append(
-            f"{idx}) {rec.created_at} — {rec.filename} (уникальных: {rec.inserted}/{rec.total_lines})"
-        )
-    return "\n".join(rows)
 
 
 def _render_user_admin_report(ctx: ContextTypes.DEFAULT_TYPE, target_user_id: int) -> str:
@@ -174,38 +167,96 @@ def _record_check(ctx: ContextTypes.DEFAULT_TYPE, user_id: int, query: str, foun
     _store(ctx).record_check(user_id, query, found)
 
 
-async def _send_upload_by_history_index(update: Update, context: ContextTypes.DEFAULT_TYPE, index_text: str) -> None:
-    user_id = update.effective_user.id if update.effective_user else 0
-    records = _store(context).get_recent_uploads(user_id)
-    if not records:
-        await update.message.reply_text("История загрузок пуста.")
+def _touch_user(ctx: ContextTypes.DEFAULT_TYPE, update: Update) -> None:
+    user = update.effective_user
+    if not user:
         return
+    _store(ctx).touch_user(user.id, user.username)
 
-    try:
-        idx = int(index_text)
-    except ValueError:
-        await update.message.reply_text("Введите номер файла из истории (например: 1).")
-        return
 
-    if idx < 1 or idx > len(records):
-        await update.message.reply_text("Неверный номер файла из истории.")
-        return
+def _render_user_link(user_id: int, username: str) -> str:
+    clean_username = escape(username.strip().lstrip("@"))
+    if clean_username:
+        return f"<a href=\"https://t.me/{clean_username}\">@{clean_username}</a>"
+    return f"<a href=\"tg://user?id={user_id}\">профиль</a>"
 
-    rec = records[idx - 1]
-    if not rec.stored_path:
-        await update.message.reply_text("Для этой записи файл недоступен для скачивания.")
-        return
 
-    file_path = Path(rec.stored_path)
-    if not file_path.exists():
-        await update.message.reply_text("Файл не найден на сервере.")
-        return
 
-    with file_path.open("rb") as fh:
-        await update.message.reply_document(document=fh, filename=rec.filename)
+async def _export_user_data(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int) -> None:
+    store = _store(context)
+    uploads = store.get_all_uploads(target_user_id)
+    checks = store.get_all_checks(target_user_id)
+    unique_queries = store.get_all_unique_checked_queries(target_user_id)
+    stats = store.get_user_stats(target_user_id)
+
+    await update.message.reply_text("⏳ Формирую полный экспорт. Это может занять немного времени...")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir) / f"user_{target_user_id}_export"
+        root.mkdir(parents=True, exist_ok=True)
+
+        summary_path = root / "summary.txt"
+        summary_path.write_text(_render_user_admin_report(context, target_user_id), encoding="utf-8")
+
+        checks_path = root / "checks_all.csv"
+        with checks_path.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["id", "created_at", "found", "query", "normalized_query"])
+            for check in checks:
+                writer.writerow([check.id, check.created_at, int(check.found), check.query, check.normalized_query])
+
+        queries_path = root / "queries_unique.txt"
+        queries_path.write_text("\n".join(unique_queries), encoding="utf-8")
+
+        uploads_path = root / "uploads_all.csv"
+        with uploads_path.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["id", "created_at", "filename", "inserted", "total_lines", "stored_path"])
+            for rec in uploads:
+                writer.writerow([rec.id, rec.created_at, rec.filename, rec.inserted, rec.total_lines, rec.stored_path])
+
+        files_dir = root / "uploaded_files"
+        files_dir.mkdir(exist_ok=True)
+        copied_files = 0
+        for rec in uploads:
+            if not rec.stored_path:
+                continue
+            source = Path(rec.stored_path)
+            if not source.exists() or not source.is_file():
+                continue
+            safe_name = f"{rec.id}_{source.name}"
+            copy2(source, files_dir / safe_name)
+            copied_files += 1
+
+        manifest_path = root / "export_manifest.txt"
+        manifest_path.write_text(
+            (
+                f"user_id={target_user_id}\n"
+                f"balance=${stats['balance']}\n"
+                f"uploads_count={stats['uploads_count']}\n"
+                f"checks_count={stats['checks_count']}\n"
+                f"unique_queries={stats['unique_checks_count']}\n"
+                f"copied_uploaded_files={copied_files}\n"
+            ),
+            encoding="utf-8",
+        )
+
+        archive_path = Path(tmpdir) / f"user_{target_user_id}_full_export.zip"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for file_path in root.rglob("*"):
+                if file_path.is_file():
+                    zf.write(file_path, arcname=file_path.relative_to(root))
+
+        with archive_path.open("rb") as fh:
+            await update.message.reply_document(
+                document=fh,
+                filename=archive_path.name,
+                caption="📦 Полный экспорт готов: все проверки, уникальные запросы, история загрузок и сохраненные файлы.",
+            )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _touch_user(context, update)
     name = update.effective_user.first_name if update.effective_user else "пользователь"
     user_id = update.effective_user.id if update.effective_user else 0
     kb = _admin_keyboard() if _is_admin(user_id, _settings(context)) else _main_keyboard()
@@ -213,6 +264,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _touch_user(context, update)
     query = " ".join(context.args).strip()
     if not query:
         await update.message.reply_text("Использование: /check <строка>")
@@ -229,6 +281,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _touch_user(context, update)
     value = " ".join(context.args).strip()
     if not value:
         await update.message.reply_text("Использование: /add <строка>")
@@ -242,6 +295,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _touch_user(context, update)
     text = (update.message.text or "").strip()
     if not text:
         return
@@ -287,9 +341,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(_render_user_admin_report(context, target_user_id))
         return
 
-    if step == "await_download_upload":
+    if step == "await_admin_export_user":
+        try:
+            target_user_id = int(text)
+        except ValueError:
+            await update.message.reply_text("Введите корректный user_id (целое число).")
+            return
+
         context.user_data["step"] = None
-        await _send_upload_by_history_index(update, context, text)
+        await _export_user_data(update, context, target_user_id)
         return
 
     if text == "📜 Правила":
@@ -312,19 +372,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if text == "👤 Профиль":
         user_id = update.effective_user.id if update.effective_user else 0
         balance = _store(context).get_balance(user_id)
-        history = _render_history(context, user_id)
-        await update.message.reply_text(f"👤 Ваш ID: {user_id}\n💰 Баланс: ${balance}\n\n{history}")
-        return
-
-    if text == "📥 Скачать файл":
-        user_id = update.effective_user.id if update.effective_user else 0
-        history = _render_history(context, user_id)
-        if history == "История файлов пока пуста.":
-            await update.message.reply_text(history)
-            return
-
-        context.user_data["step"] = "await_download_upload"
-        await update.message.reply_text(f"{history}\n\nВведите номер файла из истории для скачивания.")
+        await update.message.reply_text(f"👤 Ваш ID: {user_id}\n💰 Баланс: ${balance}")
         return
 
     if text == "🛠 Админка":
@@ -357,18 +405,35 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Введите user_id пользователя для подробного отчета.")
         return
 
+    if text == "📦 Выгрузка пользователя":
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not _is_admin(user_id, _settings(context)):
+            await update.message.reply_text("У вас нет доступа к админке")
+            return
+
+        context.user_data["step"] = "await_admin_export_user"
+        await update.message.reply_text("Введите user_id пользователя для полного экспорта данных.")
+        return
+
     if text == "👥 Список пользователей":
         user_id = update.effective_user.id if update.effective_user else 0
         if not _is_admin(user_id, _settings(context)):
             await update.message.reply_text("У вас нет доступа к админке")
             return
 
-        users = _store(context).list_known_user_ids(limit=100)
+        users = _store(context).list_known_users(limit=100)
         if not users:
             await update.message.reply_text("В системе пока нет пользователей с активностью.")
             return
-        rendered = "\n".join(str(uid) for uid in users)
-        await update.message.reply_text(f"👥 Пользователи (до 100):\n{rendered}")
+        rendered = "\n".join(
+            f"{user.user_id} — {_render_user_link(user.user_id, user.username)}"
+            for user in users
+        )
+        await update.message.reply_text(
+            f"👥 Пользователи (до 100):\n{rendered}",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
         return
 
     if "\n" not in text:
@@ -388,6 +453,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _touch_user(context, update)
     doc = update.message.document
     if not doc:
         return

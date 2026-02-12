@@ -68,6 +68,20 @@ def test_balance_upload_history_and_checks(tmp_path: Path):
         unique_checks = db.get_unique_checked_queries(100)
         assert unique_checks == ["second@example.com:pass", "first@example.com:pass"]
 
+        all_uploads = db.get_all_uploads(100)
+        assert len(all_uploads) == 2
+        assert [rec.filename for rec in all_uploads] == ["a.txt", "b.txt"]
+
+        all_checks = db.get_all_checks(100)
+        assert len(all_checks) == 3
+        assert [rec.query for rec in all_checks] == [
+            "first@example.com:pass",
+            "first@example.com:pass",
+            "second@example.com:pass",
+        ]
+
+        all_unique_queries = db.get_all_unique_checked_queries(100)
+        assert all_unique_queries == ["first@example.com:pass", "second@example.com:pass"]
         stats = db.get_user_stats(100)
         assert stats["balance"] == 13
         assert stats["uploads_count"] == 2
@@ -78,9 +92,16 @@ def test_balance_upload_history_and_checks(tmp_path: Path):
         assert stats["checks_not_found"] == 2
         assert stats["unique_checks_count"] == 2
 
+        db.touch_user(100, "first_user")
         db.add_balance(200, 1)
-        users = db.list_known_user_ids()
-        assert users[0] in {100, 200}
-        assert sorted(users) == [100, 200]
+        db.touch_user(200, "second_user")
+
+        users = db.list_known_users()
+        user_ids = sorted(user.user_id for user in users)
+        assert user_ids == [100, 200]
+
+        username_map = {user.user_id: user.username for user in users}
+        assert username_map[100] == "first_user"
+        assert username_map[200] == "second_user"
     finally:
         db.close()
