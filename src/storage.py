@@ -14,8 +14,6 @@ def normalize_line(raw: str) -> str:
     if not compact:
         return ""
 
-    # Accept messy combos like "email | password", "email;password" and
-    # snippets where the pair is surrounded by additional junk.
     match = re.search(
         r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\s*[:;|,\t ]\s*(\S+)",
         compact,
@@ -50,6 +48,15 @@ class UploadRecord:
     stored_path: str
 
 
+@dataclass(slots=True)
+class CheckRecord:
+    id: int
+    query: str
+    normalized_query: str
+    found: int
+    created_at: str
+
+
 class HashStore:
     def __init__(self, path: Path, map_size_bytes: int | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,6 +85,18 @@ class HashStore:
                 total_lines INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 stored_path TEXT
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS checks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                query TEXT NOT NULL,
+                normalized_query TEXT NOT NULL,
+                found INTEGER NOT NULL,
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -191,6 +210,17 @@ class HashStore:
         )
         self._conn.commit()
 
+    def record_check(self, user_id: int, query: str, found: bool) -> None:
+        normalized_query = normalize_line(query)
+        self._conn.execute(
+            """
+            INSERT INTO checks(user_id, query, normalized_query, found, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, query.strip(), normalized_query, 1 if found else 0, self._utc_now()),
+        )
+        self._conn.commit()
+
     def get_recent_uploads(self, user_id: int, limit: int = 5) -> list[UploadRecord]:
         rows = self._conn.execute(
             """
@@ -203,6 +233,91 @@ class HashStore:
             (user_id, limit),
         ).fetchall()
         return [UploadRecord(*row) for row in rows]
+
+    def get_recent_checks(self, user_id: int, limit: int = 10) -> list[CheckRecord]:
+        rows = self._conn.execute(
+            """
+            SELECT id, query, normalized_query, found, created_at
+            FROM checks
+            WHERE user_id=?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+        return [CheckRecord(*row) for row in rows]
+
+    def get_unique_checked_queries(self, user_id: int, limit: int = 20) -> list[str]:
+        rows = self._conn.execute(
+            """
+            SELECT normalized_query
+            FROM checks
+            WHERE user_id=? AND normalized_query != ''
+            GROUP BY normalized_query
+            ORDER BY MAX(id) DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def list_known_user_ids(self, limit: int = 100) -> list[int]:
+        rows = self._conn.execute(
+            """
+            SELECT user_id
+            FROM (
+                SELECT user_id, MAX(created_at) AS latest_ts FROM uploads GROUP BY user_id
+                UNION ALL
+                SELECT user_id, MAX(created_at) AS latest_ts FROM checks GROUP BY user_id
+                UNION ALL
+                SELECT user_id, updated_at AS latest_ts FROM users
+            )
+            GROUP BY user_id
+            ORDER BY MAX(latest_ts) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def get_user_stats(self, user_id: int) -> dict[str, int]:
+        upload_row = self._conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(total_lines), 0), COALESCE(SUM(inserted), 0)
+            FROM uploads
+            WHERE user_id=?
+            """,
+            (user_id,),
+        ).fetchone()
+        check_row = self._conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(found), 0)
+            FROM checks
+            WHERE user_id=?
+            """,
+            (user_id,),
+        ).fetchone()
+        unique_checks = self._conn.execute(
+            """
+            SELECT COUNT(DISTINCT normalized_query)
+            FROM checks
+            WHERE user_id=? AND normalized_query != ''
+            """,
+            (user_id,),
+        ).fetchone()
+
+        checks_count = int(check_row[0])
+        checks_found = int(check_row[1])
+        return {
+            "balance": self.get_balance(user_id),
+            "uploads_count": int(upload_row[0]),
+            "uploads_total_lines": int(upload_row[1]),
+            "uploads_total_inserted": int(upload_row[2]),
+            "checks_count": checks_count,
+            "checks_found": checks_found,
+            "checks_not_found": checks_count - checks_found,
+            "unique_checks_count": int(unique_checks[0]),
+        }
 
     def get_upload(self, user_id: int, upload_id: int) -> UploadRecord | None:
         row = self._conn.execute(
