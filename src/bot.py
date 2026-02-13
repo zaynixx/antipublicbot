@@ -22,7 +22,7 @@ from telegram.ext import (
 
 from .config import Settings, load_settings
 from .importers import import_text_blob, import_txt_file
-from .storage import HashStore
+from .storage import HashStore, normalize_line
 
 
 async def welcome(name: str) -> str:
@@ -282,11 +282,11 @@ def _extract_unique_lines_payload(source_path: Path) -> bytes | None:
     seen: set[str] = set()
     unique_lines: list[str] = []
     for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if not line or line in seen:
+        normalized = normalize_line(raw_line)
+        if not normalized or normalized in seen:
             continue
-        seen.add(line)
-        unique_lines.append(line)
+        seen.add(normalized)
+        unique_lines.append(normalized)
 
     if not unique_lines:
         return None

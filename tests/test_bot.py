@@ -36,11 +36,11 @@ def test_render_user_link_prefers_username_or_fallbacks_to_tg_profile():
 
 def test_extract_unique_lines_payload_deduplicates_and_trims(tmp_path):
     source = tmp_path / "upload.txt"
-    source.write_text(" one\n\none\n two \n one \n", encoding="utf-8")
+    source.write_text(" user@example.com ; pass1\nuser@example.com:pass1\n USER@example.com\tpass1 \n two \n", encoding="utf-8")
 
     payload = _extract_unique_lines_payload(source)
 
-    assert payload == "one\ntwo".encode("utf-8")
+    assert payload == "user@example.com:pass1\ntwo".encode("utf-8")
 
 
 def test_extract_unique_lines_payload_returns_none_for_only_empty_lines(tmp_path):
