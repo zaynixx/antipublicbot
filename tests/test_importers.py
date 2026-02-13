@@ -38,3 +38,15 @@ def test_import_utf16_txt_file(tmp_path: Path):
         assert db.contains("user@example.com:pass") is True
     finally:
         db.close()
+
+
+def test_import_txt_file_returns_inserted_lines(tmp_path: Path):
+    p = tmp_path / "in.txt"
+    p.write_text("a\na\nb\n", encoding="utf-8")
+    db = HashStore(tmp_path / "file2.lmdb", map_size_bytes=64 * 1024 * 1024)
+    try:
+        report = import_txt_file(db, p, batch_size=100)
+        assert report.inserted == 2
+        assert report.inserted_lines == ["a", "b"]
+    finally:
+        db.close()

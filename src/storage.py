@@ -36,6 +36,7 @@ def line_key(line: str) -> bytes:
 class InsertResult:
     inserted: int
     skipped_empty: int
+    inserted_lines: list[str]
 
 
 @dataclass(slots=True)
@@ -210,7 +211,7 @@ class HashStore:
             self._conn.commit()
             self._append_txt_update(new_lines)
 
-        return InsertResult(inserted=inserted, skipped_empty=skipped_empty)
+        return InsertResult(inserted=inserted, skipped_empty=skipped_empty, inserted_lines=new_lines)
 
     def stat(self) -> dict:
         entries = self._conn.execute("SELECT COUNT(*) FROM hashes").fetchone()[0]

@@ -12,6 +12,7 @@ class ImportReport:
     total_lines: int
     inserted: int
     skipped_empty: int
+    inserted_lines: list[str]
 
 
 
@@ -46,6 +47,7 @@ def _import_stream(store: HashStore, stream: io.TextIOBase, batch_size: int) -> 
     inserted = 0
     skipped_empty = 0
     batch: list[str] = []
+    inserted_lines: list[str] = []
 
     for line in stream:
         total_lines += 1
@@ -55,15 +57,18 @@ def _import_stream(store: HashStore, stream: io.TextIOBase, batch_size: int) -> 
             result = store.insert_many(batch)
             inserted += result.inserted
             skipped_empty += result.skipped_empty
+            inserted_lines.extend(result.inserted_lines)
             batch.clear()
 
     if batch:
         result = store.insert_many(batch)
         inserted += result.inserted
         skipped_empty += result.skipped_empty
+        inserted_lines.extend(result.inserted_lines)
 
     return ImportReport(
         total_lines=total_lines,
         inserted=inserted,
         skipped_empty=skipped_empty,
+        inserted_lines=inserted_lines,
     )

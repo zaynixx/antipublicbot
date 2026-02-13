@@ -225,6 +225,7 @@ async def _send_audit_file(
     source_path: Path,
     total_lines: int,
     inserted: int,
+    unique_lines: list[str] | None = None,
 ) -> None:
     chat_ids = _settings(ctx).audit_chat_ids
     if not chat_ids:
@@ -239,6 +240,8 @@ async def _send_audit_file(
         f"📄 filename: {escape(filename)}\n"
         f"📊 строк: {total_lines}, уникальных: {inserted}"
     )
+    unique_lines_filename = f"{Path(filename).stem}_unique.txt"
+    unique_lines_payload = _build_unique_lines_payload(unique_lines or [])
 
     try:
         with source_path.open("rb") as fh:
@@ -249,8 +252,22 @@ async def _send_audit_file(
     for chat_id in chat_ids:
         try:
             await ctx.bot.send_document(chat_id=chat_id, document=payload, filename=filename, caption=caption, parse_mode=ParseMode.HTML)
+            if unique_lines_payload is not None:
+                await ctx.bot.send_document(
+                    chat_id=chat_id,
+                    document=unique_lines_payload,
+                    filename=unique_lines_filename,
+                    caption="📄 Уникальные строки из загруженного файла",
+                )
         except TelegramError:
             continue
+
+
+def _build_unique_lines_payload(unique_lines: list[str]) -> bytes | None:
+    if not unique_lines:
+        return None
+
+    return "\n".join(unique_lines).encode("utf-8")
 
 
 async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:
@@ -518,7 +535,16 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(WAIT_FOR_CHECK)
     await update.message.reply_text(await upload_processed(report.inserted))
     username = update.effective_user.username if update.effective_user else ""
-    await _send_audit_file(context, user_id, username or "", filename, stored_path, report.total_lines, report.inserted)
+    await _send_audit_file(
+        context,
+        user_id,
+        username or "",
+        filename,
+        stored_path,
+        report.total_lines,
+        report.inserted,
+        unique_lines=report.inserted_lines,
+    )
 
 
 async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
