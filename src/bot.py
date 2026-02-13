@@ -664,12 +664,12 @@ async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if action.startswith("admin:file_comment_prompt:"):
         parts = action.split(":")
-        if len(parts) != 5:
+        if len(parts) != 4:
             await query.message.reply_text("Некорректные данные кнопки комментария.")
             return
         try:
-            target_user_id = int(parts[3])
-            upload_id = int(parts[4])
+            target_user_id = int(parts[2])
+            upload_id = int(parts[3])
         except ValueError:
             await query.message.reply_text("Некорректные данные кнопки комментария.")
             return
