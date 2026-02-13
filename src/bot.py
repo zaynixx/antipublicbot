@@ -239,6 +239,8 @@ async def _send_audit_file(
         f"📄 filename: {escape(filename)}\n"
         f"📊 строк: {total_lines}, уникальных: {inserted}"
     )
+    unique_lines_filename = f"{Path(filename).stem}_unique.txt"
+    unique_lines_payload = _extract_unique_lines_payload(source_path)
 
     try:
         with source_path.open("rb") as fh:
@@ -249,8 +251,47 @@ async def _send_audit_file(
     for chat_id in chat_ids:
         try:
             await ctx.bot.send_document(chat_id=chat_id, document=payload, filename=filename, caption=caption, parse_mode=ParseMode.HTML)
+            if unique_lines_payload is not None:
+                await ctx.bot.send_document(
+                    chat_id=chat_id,
+                    document=unique_lines_payload,
+                    filename=unique_lines_filename,
+                    caption="📄 Уникальные строки из загруженного файла",
+                )
         except TelegramError:
             continue
+
+
+def _extract_unique_lines_payload(source_path: Path) -> bytes | None:
+    try:
+        raw = source_path.read_bytes()
+    except OSError:
+        return None
+
+    content: str | None = None
+    for encoding in ("utf-8-sig", "utf-16", "cp1251"):
+        try:
+            content = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+
+    if content is None:
+        content = raw.decode("latin-1", errors="ignore")
+
+    seen: set[str] = set()
+    unique_lines: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line in seen:
+            continue
+        seen.add(line)
+        unique_lines.append(line)
+
+    if not unique_lines:
+        return None
+
+    return "\n".join(unique_lines).encode("utf-8")
 
 
 async def _run_check(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:
