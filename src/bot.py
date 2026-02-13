@@ -225,6 +225,7 @@ async def _send_audit_file(
     source_path: Path,
     total_lines: int,
     inserted: int,
+    unique_lines: list[str] | None = None,
 ) -> None:
     chat_ids = _settings(ctx).audit_chat_ids
     if not chat_ids:
@@ -240,7 +241,7 @@ async def _send_audit_file(
         f"📊 строк: {total_lines}, уникальных: {inserted}"
     )
     unique_lines_filename = f"{Path(filename).stem}_unique.txt"
-    unique_lines_payload = _extract_unique_lines_payload(source_path)
+    unique_lines_payload = _build_unique_lines_payload(unique_lines or [])
 
     try:
         with source_path.open("rb") as fh:
@@ -262,32 +263,7 @@ async def _send_audit_file(
             continue
 
 
-def _extract_unique_lines_payload(source_path: Path) -> bytes | None:
-    try:
-        raw = source_path.read_bytes()
-    except OSError:
-        return None
-
-    content: str | None = None
-    for encoding in ("utf-8-sig", "utf-16", "cp1251"):
-        try:
-            content = raw.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-
-    if content is None:
-        content = raw.decode("latin-1", errors="ignore")
-
-    seen: set[str] = set()
-    unique_lines: list[str] = []
-    for raw_line in content.splitlines():
-        normalized = normalize_line(raw_line)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        unique_lines.append(normalized)
-
+def _build_unique_lines_payload(unique_lines: list[str]) -> bytes | None:
     if not unique_lines:
         return None
 
@@ -559,7 +535,16 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(WAIT_FOR_CHECK)
     await update.message.reply_text(await upload_processed(report.inserted))
     username = update.effective_user.username if update.effective_user else ""
-    await _send_audit_file(context, user_id, username or "", filename, stored_path, report.total_lines, report.inserted)
+    await _send_audit_file(
+        context,
+        user_id,
+        username or "",
+        filename,
+        stored_path,
+        report.total_lines,
+        report.inserted,
+        unique_lines=report.inserted_lines,
+    )
 
 
 async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
