@@ -10,6 +10,7 @@ def test_admin_keyboard_contains_only_admin_entrypoint():
     assert "🧾 Отчет по пользователю" not in flat
     assert "👥 Список пользователей" not in flat
     assert "📦 Выгрузка пользователя" not in flat
+    assert "💬 Комментарий к файлу" not in flat
 
 
 def test_admin_panel_inline_keyboard_contains_all_admin_actions():
@@ -20,6 +21,7 @@ def test_admin_panel_inline_keyboard_contains_all_admin_actions():
     assert "🧾 Отчет по пользователю" in flat
     assert "👥 Список пользователей" in flat
     assert "📦 Выгрузка пользователя" in flat
+    assert "💬 Комментарий к файлу" in flat
 
 
 def test_user_keyboard_hides_download_actions():
