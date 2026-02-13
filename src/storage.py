@@ -281,8 +281,8 @@ class HashStore:
         inserted: int,
         total_lines: int,
         stored_path: str | None = None,
-    ) -> None:
-        self._conn.execute(
+    ) -> int:
+        cur = self._conn.execute(
             """
             INSERT INTO uploads(user_id, filename, inserted, total_lines, created_at, stored_path)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -290,6 +290,7 @@ class HashStore:
             (user_id, filename, inserted, total_lines, self._utc_now(), stored_path),
         )
         self._conn.commit()
+        return int(cur.lastrowid)
 
     def record_check(self, user_id: int, query: str, found: bool) -> None:
         normalized_query = normalize_line(query)

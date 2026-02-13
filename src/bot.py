@@ -66,7 +66,8 @@ ADMIN_HELP = """🛠 Админ-панель
 • 💳 Выдать баланс — начислить средства пользователю.
 • 🧾 Отчет по пользователю — подробная статистика и уникальные поисковые строки.
 • 👥 Список пользователей — пользователи, замеченные в системе.
-• 📦 Выгрузка пользователя — полный экспорт файлов и всех строк пользователя."""
+• 📦 Выгрузка пользователя — полный экспорт файлов и всех строк пользователя.
+• 💬 Комментарий к файлу — отправить пользователю комментарий по конкретной загрузке."""
 
 
 async def upload_processed(unique_count: int) -> str:
@@ -107,6 +108,7 @@ def _admin_panel_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🧾 Отчет по пользователю", callback_data="admin:user_report")],
             [InlineKeyboardButton("👥 Список пользователей", callback_data="admin:list_users")],
             [InlineKeyboardButton("📦 Выгрузка пользователя", callback_data="admin:export_user")],
+            [InlineKeyboardButton("💬 Комментарий к файлу", callback_data="admin:file_comment")],
         ]
     )
 
@@ -148,7 +150,7 @@ def _render_user_admin_report(ctx: ContextTypes.DEFAULT_TYPE, target_user_id: in
     if recent_uploads:
         for rec in recent_uploads:
             lines.append(
-                f"• {rec.created_at} — {rec.filename} (уникальных: {rec.inserted}/{rec.total_lines})"
+                f"• #{rec.id} {rec.created_at} — {rec.filename} (уникальных: {rec.inserted}/{rec.total_lines})"
             )
     else:
         lines.append("• Нет загрузок.")
@@ -217,6 +219,24 @@ async def _send_audit_message(
             continue
 
 
+async def _notify_balance_granted(
+    ctx: ContextTypes.DEFAULT_TYPE,
+    target_user_id: int,
+    amount: int,
+) -> None:
+    try:
+        await ctx.bot.send_message(
+            chat_id=target_user_id,
+            text=(
+                "✅ Файл успешно проверен.\n"
+                f"💰 Баланс +{amount}$"
+            ),
+        )
+    except TelegramError:
+        # Пользователь мог не начать диалог с ботом или заблокировать его.
+        pass
+
+
 async def _send_audit_file(
     ctx: ContextTypes.DEFAULT_TYPE,
     user_id: int,
@@ -225,6 +245,7 @@ async def _send_audit_file(
     source_path: Path,
     total_lines: int,
     inserted: int,
+    upload_id: int,
     unique_lines: list[str] | None = None,
 ) -> None:
     chat_ids = _settings(ctx).audit_chat_ids
@@ -251,7 +272,16 @@ async def _send_audit_file(
 
     for chat_id in chat_ids:
         try:
-            await ctx.bot.send_document(chat_id=chat_id, document=payload, filename=filename, caption=caption, parse_mode=ParseMode.HTML)
+            await ctx.bot.send_document(
+                chat_id=chat_id,
+                document=payload,
+                filename=filename,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("💬 Оставить комментарий", callback_data=f"admin:file_comment_prompt:{user_id}:{upload_id}")]]
+                ),
+            )
             if unique_lines_payload is not None:
                 await ctx.bot.send_document(
                     chat_id=chat_id,
@@ -418,6 +448,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         new_balance = _store(context).add_balance(target_user_id, amount)
         context.user_data["step"] = None
         await update.message.reply_text(f"✅ Баланс обновлен. user_id={target_user_id}, новый баланс=${new_balance}")
+        if amount > 0:
+            await _notify_balance_granted(context, target_user_id, amount)
         return
 
     if step == "await_admin_user_report":
@@ -440,6 +472,74 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         context.user_data["step"] = None
         await _export_user_data(update, context, target_user_id)
+        return
+
+    if step == "await_admin_file_comment_header":
+        parts = text.split()
+        if len(parts) != 2:
+            await update.message.reply_text("Формат: <user_id> <upload_id>")
+            return
+        try:
+            target_user_id = int(parts[0])
+            upload_id = int(parts[1])
+        except ValueError:
+            await update.message.reply_text("Нужны целые числа: <user_id> <upload_id>")
+            return
+
+        upload = _store(context).get_upload(target_user_id, upload_id)
+        if upload is None:
+            await update.message.reply_text("❌ Загрузка не найдена. Проверьте user_id и upload_id.")
+            return
+
+        context.user_data["step"] = "await_admin_file_comment_text"
+        context.user_data["comment_target_user_id"] = target_user_id
+        context.user_data["comment_upload_id"] = upload_id
+        await update.message.reply_text(
+            f"Введите комментарий для файла #{upload_id} ({upload.filename})."
+        )
+        return
+
+    if step == "await_admin_file_comment_text":
+        target_user_id = context.user_data.get("comment_target_user_id")
+        upload_id = context.user_data.get("comment_upload_id")
+        comment = text.strip()
+        if not isinstance(target_user_id, int) or not isinstance(upload_id, int):
+            context.user_data["step"] = None
+            await update.message.reply_text("❌ Сессия комментария сброшена. Повторите действие из админки.")
+            return
+        if not comment:
+            await update.message.reply_text("Комментарий не должен быть пустым.")
+            return
+
+        upload = _store(context).get_upload(target_user_id, upload_id)
+        if upload is None:
+            context.user_data["step"] = None
+            context.user_data.pop("comment_target_user_id", None)
+            context.user_data.pop("comment_upload_id", None)
+            await update.message.reply_text("❌ Загрузка не найдена. Возможно, данные изменились.")
+            return
+
+        context.user_data["step"] = None
+        context.user_data.pop("comment_target_user_id", None)
+        context.user_data.pop("comment_upload_id", None)
+
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=(
+                    "💬 Комментарий по вашему файлу\n"
+                    f"📄 Файл: {upload.filename}\n"
+                    f"🆔 ID загрузки: #{upload_id}\n\n"
+                    f"{comment}"
+                ),
+            )
+        except TelegramError:
+            await update.message.reply_text(
+                "⚠️ Не удалось отправить комментарий пользователю (бот заблокирован или не начат диалог)."
+            )
+            return
+
+        await update.message.reply_text("✅ Комментарий отправлен пользователю.")
         return
 
     if text == "📜 Правила":
@@ -530,7 +630,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(FILE_UPLOAD_ERROR_MSG)
         return
 
-    _store(context).record_upload(user_id, filename, report.inserted, report.total_lines, str(stored_path))
+    upload_id = _store(context).record_upload(user_id, filename, report.inserted, report.total_lines, str(stored_path))
 
     await update.message.reply_text(WAIT_FOR_CHECK)
     await update.message.reply_text(await upload_processed(report.inserted))
@@ -543,6 +643,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         stored_path,
         report.total_lines,
         report.inserted,
+        upload_id,
         unique_lines=report.inserted_lines,
     )
 
@@ -561,6 +662,31 @@ async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     action = query.data or ""
     context.user_data["step"] = None
 
+    if action.startswith("admin:file_comment_prompt:"):
+        parts = action.split(":")
+        if len(parts) != 4:
+            await query.message.reply_text("Некорректные данные кнопки комментария.")
+            return
+        try:
+            target_user_id = int(parts[2])
+            upload_id = int(parts[3])
+        except ValueError:
+            await query.message.reply_text("Некорректные данные кнопки комментария.")
+            return
+
+        upload = _store(context).get_upload(target_user_id, upload_id)
+        if upload is None:
+            await query.message.reply_text("❌ Загрузка не найдена. Возможно, запись уже удалена.")
+            return
+
+        context.user_data["step"] = "await_admin_file_comment_text"
+        context.user_data["comment_target_user_id"] = target_user_id
+        context.user_data["comment_upload_id"] = upload_id
+        await query.message.reply_text(
+            f"Введите комментарий для файла #{upload_id} ({upload.filename})."
+        )
+        return
+
     if action == "admin:grant_balance":
         context.user_data["step"] = "await_grant_balance"
         await query.message.reply_text("Введите: <user_id> <amount> для выдачи баланса в $")
@@ -574,6 +700,13 @@ async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if action == "admin:export_user":
         context.user_data["step"] = "await_admin_export_user"
         await query.message.reply_text("Введите user_id пользователя для полного экспорта данных.")
+        return
+
+    if action == "admin:file_comment":
+        context.user_data["step"] = "await_admin_file_comment_header"
+        await query.message.reply_text(
+            "Введите: <user_id> <upload_id>, чтобы выбрать файл для комментария."
+        )
         return
 
     if action == "admin:list_users":
