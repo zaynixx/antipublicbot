@@ -245,6 +245,7 @@ async def _send_audit_file(
     source_path: Path,
     total_lines: int,
     inserted: int,
+    upload_id: int,
     unique_lines: list[str] | None = None,
 ) -> None:
     chat_ids = _settings(ctx).audit_chat_ids
@@ -271,7 +272,16 @@ async def _send_audit_file(
 
     for chat_id in chat_ids:
         try:
-            await ctx.bot.send_document(chat_id=chat_id, document=payload, filename=filename, caption=caption, parse_mode=ParseMode.HTML)
+            await ctx.bot.send_document(
+                chat_id=chat_id,
+                document=payload,
+                filename=filename,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("💬 Оставить комментарий", callback_data=f"admin:file_comment_prompt:{user_id}:{upload_id}")]]
+                ),
+            )
             if unique_lines_payload is not None:
                 await ctx.bot.send_document(
                     chat_id=chat_id,
@@ -620,7 +630,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(FILE_UPLOAD_ERROR_MSG)
         return
 
-    _store(context).record_upload(user_id, filename, report.inserted, report.total_lines, str(stored_path))
+    upload_id = _store(context).record_upload(user_id, filename, report.inserted, report.total_lines, str(stored_path))
 
     await update.message.reply_text(WAIT_FOR_CHECK)
     await update.message.reply_text(await upload_processed(report.inserted))
@@ -633,6 +643,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         stored_path,
         report.total_lines,
         report.inserted,
+        upload_id,
         unique_lines=report.inserted_lines,
     )
 
@@ -650,6 +661,31 @@ async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     action = query.data or ""
     context.user_data["step"] = None
+
+    if action.startswith("admin:file_comment_prompt:"):
+        parts = action.split(":")
+        if len(parts) != 5:
+            await query.message.reply_text("Некорректные данные кнопки комментария.")
+            return
+        try:
+            target_user_id = int(parts[3])
+            upload_id = int(parts[4])
+        except ValueError:
+            await query.message.reply_text("Некорректные данные кнопки комментария.")
+            return
+
+        upload = _store(context).get_upload(target_user_id, upload_id)
+        if upload is None:
+            await query.message.reply_text("❌ Загрузка не найдена. Возможно, запись уже удалена.")
+            return
+
+        context.user_data["step"] = "await_admin_file_comment_text"
+        context.user_data["comment_target_user_id"] = target_user_id
+        context.user_data["comment_upload_id"] = upload_id
+        await query.message.reply_text(
+            f"Введите комментарий для файла #{upload_id} ({upload.filename})."
+        )
+        return
 
     if action == "admin:grant_balance":
         context.user_data["step"] = "await_grant_balance"

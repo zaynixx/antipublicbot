@@ -42,8 +42,10 @@ def test_balance_upload_history_and_checks(tmp_path: Path):
         assert db.spend_balance(100, 100) is False
         assert db.get_balance(100) == 13
 
-        db.record_upload(100, "a.txt", inserted=3, total_lines=4, stored_path="/tmp/a.txt")
-        db.record_upload(100, "b.txt", inserted=7, total_lines=9, stored_path="/tmp/b.txt")
+        first_upload_id = db.record_upload(100, "a.txt", inserted=3, total_lines=4, stored_path="/tmp/a.txt")
+        second_upload_id = db.record_upload(100, "b.txt", inserted=7, total_lines=9, stored_path="/tmp/b.txt")
+        assert isinstance(first_upload_id, int)
+        assert isinstance(second_upload_id, int)
 
         db.record_check(100, "first@example.com:pass", found=True)
         db.record_check(100, "first@example.com:pass", found=False)
