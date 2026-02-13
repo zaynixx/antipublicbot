@@ -22,7 +22,7 @@ from telegram.ext import (
 
 from .config import Settings, load_settings
 from .importers import import_text_blob, import_txt_file
-from .storage import HashStore
+from .storage import HashStore, normalize_line
 
 
 async def welcome(name: str) -> str:
