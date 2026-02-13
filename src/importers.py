@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import io
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,22 +24,25 @@ def import_text_blob(store: HashStore, text: str, batch_size: int) -> ImportRepo
 
 
 def import_txt_file(store: HashStore, path: Path, batch_size: int) -> ImportReport:
-    raw = path.read_bytes()
-    text = _decode_text_file(raw)
-    stream = io.StringIO(text)
-    return _import_stream(store, stream, batch_size=batch_size)
+    encoding = _detect_file_encoding(path)
+    with path.open("r", encoding=encoding, errors="ignore", newline="") as stream:
+        return _import_stream(store, stream, batch_size=batch_size)
 
 
-def _decode_text_file(raw: bytes) -> str:
-    # Prioritize UTF variants first; many users upload UTF-16 encoded .txt files.
-    # Fallback to CP1251 for legacy Windows exports with Cyrillic text.
-    for encoding in ("utf-8-sig", "utf-16", "cp1251"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
+def _detect_file_encoding(path: Path) -> str:
+    sample = path.read_bytes()[:4096]
 
-    return raw.decode("latin-1", errors="ignore")
+    if sample.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig"
+    if sample.startswith(codecs.BOM_UTF16_LE) or sample.startswith(codecs.BOM_UTF16_BE):
+        return "utf-16"
+
+    # Prefer UTF-8 for plain ASCII/UTF-8 datasets; fallback to CP1251 for legacy exports.
+    try:
+        sample.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "cp1251"
 
 
 

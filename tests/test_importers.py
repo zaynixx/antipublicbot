@@ -40,6 +40,19 @@ def test_import_utf16_txt_file(tmp_path: Path):
         db.close()
 
 
+def test_import_cp1251_txt_file(tmp_path: Path):
+    p = tmp_path / "cp1251.txt"
+    p.write_bytes("логин:пароль\n".encode("cp1251"))
+    db = HashStore(tmp_path / "cp1251.lmdb", map_size_bytes=64 * 1024 * 1024)
+    try:
+        report = import_txt_file(db, p, batch_size=100)
+        assert report.total_lines == 1
+        assert report.inserted == 1
+        assert db.contains("логин:пароль") is True
+    finally:
+        db.close()
+
+
 def test_import_txt_file_returns_inserted_lines(tmp_path: Path):
     p = tmp_path / "in.txt"
     p.write_text("a\na\nb\n", encoding="utf-8")
